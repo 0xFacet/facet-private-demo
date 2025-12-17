@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Pool Demo</title>
+    <script src="https://cdn.jsdelivr.net/npm/ethers@6.9.0/dist/ethers.umd.min.js"></script>
+    <style>
+        :root {
+            --bg: #0a0a0a;
+            --card: #141414;
+            --border: #2a2a2a;
+            --text: #e5e5e5;
+            --muted: #888;
+            --accent: #3b82f6;
+            --success: #22c55e;
+            --error: #ef4444;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 2rem;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .subtitle {
+            color: var(--muted);
+            margin-bottom: 2rem;
+        }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+        }
+        .card h2 {
+            font-size: 1rem;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .card h2 .step {
+            background: var(--border);
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+        }
+        .card.completed h2 .step {
+            background: var(--success);
+        }
+        .status {
+            font-size: 0.875rem;
+            color: var(--muted);
+            margin-bottom: 1rem;
+        }
+        .status.connected { color: var(--success); }
+        .status.error { color: var(--error); }
+        button {
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.875rem;
+            width: 100%;
+            transition: opacity 0.2s;
+        }
+        button:hover { opacity: 0.9; }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        input {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 0.875rem;
+            margin-bottom: 1rem;
+        }
+        input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+        .info {
+            font-size: 0.75rem;
+            color: var(--muted);
+            margin-top: 0.5rem;
+        }
+        .note-card {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 1rem;
+            margin-top: 1rem;
+            font-family: monospace;
+            font-size: 0.75rem;
+            word-break: break-all;
+        }
+        .note-card .label {
+            color: var(--muted);
+            margin-bottom: 0.25rem;
+        }
+        .note-card .value {
+            color: var(--success);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Privacy Pool Demo</h1>
+        <p class="subtitle">Shielded transfers using ZK proofs</p>
+
+        <!-- Step 1: Connect Wallet -->
+        <div class="card" id="connectCard">
+            <h2><span class="step">1</span> Connect Wallet</h2>
+            <p class="status" id="walletStatus">Not connected</p>
+            <button id="connectBtn" onclick="connectWallet()">Connect MetaMask</button>
+        </div>
+
+        <!-- Step 2: Register ECIES Key -->
+        <div class="card" id="registerCard">
+            <h2><span class="step">2</span> Register Encryption Key</h2>
+            <p class="status" id="registerStatus">Connect wallet first</p>
+            <button id="registerBtn" onclick="registerKey()" disabled>Generate & Register Key</button>
+            <p class="info">This registers your ECIES public key so others can send you private transfers.</p>
+        </div>
+
+        <!-- Step 3: Deposit -->
+        <div class="card" id="depositCard">
+            <h2><span class="step">3</span> Deposit ETH</h2>
+            <p class="status" id="depositStatus">Register key first</p>
+            <input type="text" id="depositAmount" placeholder="Amount in ETH (e.g., 0.1)" disabled>
+            <button id="depositBtn" onclick="deposit()" disabled>Deposit</button>
+            <p class="info">Deposits ETH and creates a shielded note only you can spend.</p>
+        </div>
+
+        <!-- Notes Display -->
+        <div class="card" id="notesCard" style="display: none;">
+            <h2>Your Shielded Notes</h2>
+            <div id="notesList"></div>
+        </div>
+    </div>
+
+    <script>
+        // Contract addresses (update after deployment)
+        const CONTRACTS = {
+            privacyPool: '0x0000000000000000000000000000000000000000',
+            registry: '0x0000000000000000000000000000000000000000'
+        };
+
+        // ABIs (minimal)
+        const REGISTRY_ABI = [
+            'function register(bytes32 pubKeyX, bytes32 pubKeyY) external',
+            'function getKey(address owner) external view returns (bytes32, bytes32)',
+            'event KeyRegistered(address indexed owner, bytes32 pubKeyX, bytes32 pubKeyY)'
+        ];
+
+        const POOL_ABI = [
+            'function deposit(bytes32 commitment) external payable',
+            'event NoteCreated(bytes32 indexed commitment, uint256 leafIndex, uint256 timestamp)'
+        ];
+
+        let provider, signer, userAddress;
+        let eciesPrivateKey, eciesPublicKey;
+        let notes = [];
+
+        async function connectWallet() {
+            try {
+                if (!window.ethereum) {
+                    alert('Please install MetaMask');
+                    return;
+                }
+
+                provider = new ethers.BrowserProvider(window.ethereum);
+                await provider.send('eth_requestAccounts', []);
+                signer = await provider.getSigner();
+                userAddress = await signer.getAddress();
+
+                document.getElementById('walletStatus').textContent = `Connected: ${userAddress.slice(0, 6)}...${userAddress.slice(-4)}`;
+                document.getElementById('walletStatus').className = 'status connected';
+                document.getElementById('connectCard').classList.add('completed');
+                document.getElementById('connectBtn').disabled = true;
+
+                // Enable register
+                document.getElementById('registerBtn').disabled = false;
+                document.getElementById('registerStatus').textContent = 'Ready to register';
+
+                // Check if already registered
+                await checkRegistration();
+            } catch (err) {
+                console.error(err);
+                document.getElementById('walletStatus').textContent = `Error: ${err.message}`;
+                document.getElementById('walletStatus').className = 'status error';
+            }
+        }
+
+        async function checkRegistration() {
+            try {
+                const registry = new ethers.Contract(CONTRACTS.registry, REGISTRY_ABI, provider);
+                const [pubKeyX, pubKeyY] = await registry.getKey(userAddress);
+
+                if (pubKeyX !== ethers.ZeroHash) {
+                    document.getElementById('registerStatus').textContent = 'Already registered';
+                    document.getElementById('registerStatus').className = 'status connected';
+                    document.getElementById('registerCard').classList.add('completed');
+                    document.getElementById('registerBtn').disabled = true;
+
+                    // Enable deposit
+                    document.getElementById('depositBtn').disabled = false;
+                    document.getElementById('depositAmount').disabled = false;
+                    document.getElementById('depositStatus').textContent = 'Ready to deposit';
+                }
+            } catch (err) {
+                console.log('Registry check failed (contract may not be deployed):', err.message);
+            }
+        }
+
+        async function registerKey() {
+            try {
+                document.getElementById('registerStatus').textContent = 'Generating key...';
+
+                // Generate ECIES keypair (using secp256k1)
+                // For demo, we derive from a signature to make it deterministic
+                const message = 'Privacy Pool ECIES Key Generation';
+                const signature = await signer.signMessage(message);
+
+                // Use signature hash as private key
+                eciesPrivateKey = ethers.keccak256(signature);
+
+                // Derive public key (this is a simplification - real ECIES would use proper derivation)
+                // For demo purposes, we'll just use the private key to create coordinates
+                const privKeyBytes = ethers.getBytes(eciesPrivateKey);
+
+                // In production, use noble-secp256k1 to derive actual public key
+                // For demo, we'll hash to create X and Y coordinates
+                const pubKeyX = ethers.keccak256(ethers.concat([privKeyBytes, ethers.toUtf8Bytes('x')]));
+                const pubKeyY = ethers.keccak256(ethers.concat([privKeyBytes, ethers.toUtf8Bytes('y')]));
+
+                eciesPublicKey = { x: pubKeyX, y: pubKeyY };
+
+                document.getElementById('registerStatus').textContent = 'Registering on-chain...';
+
+                const registry = new ethers.Contract(CONTRACTS.registry, REGISTRY_ABI, signer);
+                const tx = await registry.register(pubKeyX, pubKeyY);
+                await tx.wait();
+
+                document.getElementById('registerStatus').textContent = 'Key registered!';
+                document.getElementById('registerStatus').className = 'status connected';
+                document.getElementById('registerCard').classList.add('completed');
+                document.getElementById('registerBtn').disabled = true;
+
+                // Enable deposit
+                document.getElementById('depositBtn').disabled = false;
+                document.getElementById('depositAmount').disabled = false;
+                document.getElementById('depositStatus').textContent = 'Ready to deposit';
+
+                // Store private key in localStorage (demo only - not secure for production!)
+                localStorage.setItem('eciesPrivateKey', eciesPrivateKey);
+
+            } catch (err) {
+                console.error(err);
+                document.getElementById('registerStatus').textContent = `Error: ${err.message}`;
+                document.getElementById('registerStatus').className = 'status error';
+            }
+        }
+
+        async function deposit() {
+            try {
+                const amountStr = document.getElementById('depositAmount').value;
+                if (!amountStr || isNaN(parseFloat(amountStr))) {
+                    alert('Please enter a valid amount');
+                    return;
+                }
+
+                const amount = ethers.parseEther(amountStr);
+                document.getElementById('depositStatus').textContent = 'Creating note...';
+
+                // Create note commitment
+                // commitment = Poseidon(amount, owner, randomness)
+                // For demo, we use keccak256
+                const randomness = ethers.randomBytes(32);
+                const commitment = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+                    ['uint256', 'address', 'bytes32'],
+                    [amount, userAddress, randomness]
+                ));
+
+                document.getElementById('depositStatus').textContent = 'Sending transaction...';
+
+                const pool = new ethers.Contract(CONTRACTS.privacyPool, POOL_ABI, signer);
+                const tx = await pool.deposit(commitment, { value: amount });
+                const receipt = await tx.wait();
+
+                // Find NoteCreated event
+                const event = receipt.logs.find(log => {
+                    try {
+                        return pool.interface.parseLog(log)?.name === 'NoteCreated';
+                    } catch { return false; }
+                });
+
+                const leafIndex = event ? pool.interface.parseLog(event).args.leafIndex : 'unknown';
+
+                // Store note locally
+                const note = {
+                    commitment,
+                    amount: amountStr,
+                    owner: userAddress,
+                    randomness: ethers.hexlify(randomness),
+                    leafIndex: leafIndex.toString(),
+                    timestamp: Date.now()
+                };
+
+                notes.push(note);
+                localStorage.setItem('notes', JSON.stringify(notes));
+
+                document.getElementById('depositStatus').textContent = `Deposited ${amountStr} ETH!`;
+                document.getElementById('depositStatus').className = 'status connected';
+                document.getElementById('depositAmount').value = '';
+
+                displayNotes();
+
+            } catch (err) {
+                console.error(err);
+                document.getElementById('depositStatus').textContent = `Error: ${err.message}`;
+                document.getElementById('depositStatus').className = 'status error';
+            }
+        }
+
+        function displayNotes() {
+            if (notes.length === 0) return;
+
+            document.getElementById('notesCard').style.display = 'block';
+            const notesList = document.getElementById('notesList');
+            notesList.innerHTML = '';
+
+            notes.forEach((note, i) => {
+                const noteEl = document.createElement('div');
+                noteEl.className = 'note-card';
+                noteEl.innerHTML = `
+                    <div class="label">Note #${i + 1}</div>
+                    <div class="value">${note.amount} ETH</div>
+                    <div class="label" style="margin-top: 0.5rem">Commitment</div>
+                    <div>${note.commitment.slice(0, 20)}...</div>
+                    <div class="label" style="margin-top: 0.5rem">Leaf Index</div>
+                    <div>${note.leafIndex}</div>
+                `;
+                notesList.appendChild(noteEl);
+            });
+        }
+
+        // Load saved state on page load
+        window.onload = function() {
+            const savedKey = localStorage.getItem('eciesPrivateKey');
+            if (savedKey) {
+                eciesPrivateKey = savedKey;
+            }
+
+            const savedNotes = localStorage.getItem('notes');
+            if (savedNotes) {
+                notes = JSON.parse(savedNotes);
+                displayNotes();
+            }
+        };
+    </script>
+</body>
+</html>

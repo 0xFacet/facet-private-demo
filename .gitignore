@@ -1,0 +1,22 @@
+# OS
+.DS_Store
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# Node.js
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Noir circuits
+circuits/*/target/
+
+# Logs
+*.log

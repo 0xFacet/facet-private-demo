@@ -1,0 +1,17 @@
+{
+  "name": "fixtures",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "generate:poseidon": "node generate-poseidon-vectors.mjs",
+    "generate:ecdsa": "node generate-ecdsa-fixture.mjs",
+    "generate:eip1559": "node generate-eip1559-fixtures.mjs",
+    "generate": "npm run generate:poseidon && npm run generate:ecdsa && npm run generate:eip1559"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1",
+    "circomlibjs": "^0.1.7",
+    "viem": "^2.21.0"
+  }
+}
