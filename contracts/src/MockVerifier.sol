@@ -8,7 +8,7 @@ import {IVerifier} from "./IVerifier.sol";
 /// @dev Replace with real verifier after circuits are compiled
 contract MockVerifier is IVerifier {
     /// @notice Always returns true - DO NOT USE IN PRODUCTION
-    function verify(bytes calldata, bytes32[] calldata) external pure override returns (bool) {
+    function verify(bytes calldata, bytes32[] calldata) external view override returns (bool) {
         return true;
     }
 }

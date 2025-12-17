@@ -1,0 +1,17 @@
+{
+  "name": "privacy-pool-integration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "npx tsx test-flow.ts"
+  },
+  "dependencies": {
+    "circomlibjs": "^0.1.7",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
+  }
+}
