@@ -1,7 +1,7 @@
 // L1 (Sepolia) client and transaction submission
 // Handles relayer wallet and contract interactions
 
-import { createPublicClient, createWalletClient, http, type Hex, type TransactionReceipt } from 'viem';
+import { createPublicClient, createWalletClient, http, decodeEventLog, type Hex, type TransactionReceipt } from 'viem';
 import { sepolia } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 import { L1_RPC_URL, CONTRACTS } from './config.js';
@@ -286,8 +286,156 @@ export async function waitForReceipt(hash: Hex): Promise<TransactionReceipt> {
 }
 
 /**
+ * Parse Deposit event from receipt and return leafIndex
+ */
+export function parseDepositLeafIndex(receipt: TransactionReceipt): number {
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() === (CONTRACTS.privacyPool as string).toLowerCase()) {
+      try {
+        const decoded = decodeEventLog({
+          abi: [PRIVACY_POOL_EVENTS.Deposit],
+          data: log.data,
+          topics: log.topics,
+        });
+        if (decoded.eventName === 'Deposit') {
+          const args = decoded.args as any;
+          return Number(args.leafIndex);
+        }
+      } catch {
+        // Not the Deposit event, continue
+      }
+    }
+  }
+  throw new Error('Deposit event not found in receipt');
+}
+
+/**
+ * Parse Transfer event from receipt and return leafIndices
+ */
+export function parseTransferLeafIndices(receipt: TransactionReceipt): [number, number] {
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() === (CONTRACTS.privacyPool as string).toLowerCase()) {
+      try {
+        const decoded = decodeEventLog({
+          abi: [PRIVACY_POOL_EVENTS.Transfer],
+          data: log.data,
+          topics: log.topics,
+        });
+        if (decoded.eventName === 'Transfer') {
+          const args = decoded.args as any;
+          return [Number(args.leafIndices[0]), Number(args.leafIndices[1])];
+        }
+      } catch {
+        // Not the Transfer event, continue
+      }
+    }
+  }
+  throw new Error('Transfer event not found in receipt');
+}
+
+/**
+ * Parse Withdrawal event from receipt and return changeLeafIndex
+ */
+export function parseWithdrawLeafIndex(receipt: TransactionReceipt): number {
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() === (CONTRACTS.privacyPool as string).toLowerCase()) {
+      try {
+        const decoded = decodeEventLog({
+          abi: [PRIVACY_POOL_EVENTS.Withdrawal],
+          data: log.data,
+          topics: log.topics,
+        });
+        if (decoded.eventName === 'Withdrawal') {
+          const args = decoded.args as any;
+          return Number(args.changeLeafIndex);
+        }
+      } catch {
+        // Not the Withdrawal event, continue
+      }
+    }
+  }
+  throw new Error('Withdrawal event not found in receipt');
+}
+
+/**
  * Get the relayer address
  */
 export function getRelayerAddress(): Hex | null {
   return relayer?.account?.address ?? null;
+}
+
+// Registry ABI
+const REGISTRY_ABI = [
+  {
+    name: 'register',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'user', type: 'address' },
+      { name: 'pkEnc', type: 'bytes' },
+    ],
+    outputs: [],
+  },
+  {
+    name: 'getEncryptionKey',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'user', type: 'address' }],
+    outputs: [{ name: '', type: 'bytes' }],
+  },
+  {
+    name: 'isRegistered',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'user', type: 'address' }],
+    outputs: [{ name: '', type: 'bool' }],
+  },
+] as const;
+
+/**
+ * Register encryption public key in registry (33-byte compressed secp256k1 key)
+ */
+export async function registerEncryptionKey(user: Hex, pkEnc: Hex): Promise<Hex> {
+  if (!relayer) {
+    throw new Error('Relayer not configured');
+  }
+
+  const hash = await relayer.writeContract({
+    address: CONTRACTS.registry as Hex,
+    abi: REGISTRY_ABI,
+    functionName: 'register',
+    args: [user, pkEnc],
+  });
+
+  console.log(`[L1] Registry register submitted: ${hash}`);
+  return hash;
+}
+
+/**
+ * Get encryption public key from registry (returns 33-byte compressed key as hex)
+ */
+export async function getEncryptionKey(user: Hex): Promise<Hex | null> {
+  const result = await l1Public.readContract({
+    address: CONTRACTS.registry as Hex,
+    abi: REGISTRY_ABI,
+    functionName: 'getEncryptionKey',
+    args: [user],
+  }) as Hex;
+
+  if (!result || result === '0x' || result.length !== 68) { // 0x + 66 chars = 33 bytes
+    return null;
+  }
+  return result;
+}
+
+/**
+ * Check if user is registered
+ */
+export async function isUserRegistered(user: Hex): Promise<boolean> {
+  return await l1Public.readContract({
+    address: CONTRACTS.registry as Hex,
+    abi: REGISTRY_ABI,
+    functionName: 'isRegistered',
+    args: [user],
+  });
 }

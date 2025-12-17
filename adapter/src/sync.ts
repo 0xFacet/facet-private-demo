@@ -289,3 +289,88 @@ export async function getEventsSinceBlock(fromBlock: bigint): Promise<PoolEvent[
 
   return events;
 }
+
+/**
+ * Get all deposit events (for note recovery)
+ */
+export async function getDepositEvents(): Promise<DepositEvent[]> {
+  const poolAddress = CONTRACTS.privacyPool as Hex;
+
+  const logs = await l1Public.getLogs({
+    address: poolAddress,
+    event: parseAbiItem('event Deposit(uint256 indexed commitment, uint256 indexed leafIndex, uint256 amount, bytes encryptedNote)'),
+    fromBlock: DEPLOY_BLOCK,
+    toBlock: 'latest',
+  });
+
+  return logs.map((log) => {
+    const args = log.args as any;
+    return {
+      type: 'deposit' as const,
+      commitment: args.commitment,
+      leafIndex: Number(args.leafIndex),
+      amount: args.amount,
+      encryptedNote: args.encryptedNote,
+      blockNumber: log.blockNumber,
+      logIndex: log.logIndex,
+    };
+  });
+}
+
+/**
+ * Get all transfer events (for note recovery)
+ */
+export async function getTransferEvents(): Promise<TransferEvent[]> {
+  const poolAddress = CONTRACTS.privacyPool as Hex;
+
+  const logs = await l1Public.getLogs({
+    address: poolAddress,
+    event: parseAbiItem('event Transfer(uint256[2] nullifiers, uint256[2] commitments, uint256[2] leafIndices, uint256 intentNullifier, bytes[2] encryptedNotes)'),
+    fromBlock: DEPLOY_BLOCK,
+    toBlock: 'latest',
+  });
+
+  return logs.map((log) => {
+    const args = log.args as any;
+    return {
+      type: 'transfer' as const,
+      nullifiers: [args.nullifiers[0], args.nullifiers[1]],
+      commitments: [args.commitments[0], args.commitments[1]],
+      leafIndices: [Number(args.leafIndices[0]), Number(args.leafIndices[1])],
+      intentNullifier: args.intentNullifier,
+      encryptedNotes: args.encryptedNotes,
+      blockNumber: log.blockNumber,
+      logIndex: log.logIndex,
+    };
+  });
+}
+
+/**
+ * Get all withdraw events (for change note recovery)
+ */
+export async function getWithdrawEvents(): Promise<WithdrawEvent[]> {
+  const poolAddress = CONTRACTS.privacyPool as Hex;
+
+  const logs = await l1Public.getLogs({
+    address: poolAddress,
+    event: parseAbiItem('event Withdrawal(uint256[2] nullifiers, uint256 changeCommitment, uint256 changeLeafIndex, uint256 intentNullifier, address indexed recipient, uint256 amount, bytes encryptedChange)'),
+    fromBlock: DEPLOY_BLOCK,
+    toBlock: 'latest',
+  });
+
+  return logs.map((log) => {
+    const args = log.args as any;
+    return {
+      type: 'withdraw' as const,
+      nullifiers: [args.nullifiers[0], args.nullifiers[1]],
+      changeCommitment: args.changeCommitment,
+      changeLeafIndex: Number(args.changeLeafIndex),
+      intentNullifier: args.intentNullifier,
+      recipient: args.recipient,
+      amount: args.amount,
+      encryptedChange: args.encryptedChange,
+      blockNumber: log.blockNumber,
+      logIndex: log.logIndex,
+    };
+  });
+}

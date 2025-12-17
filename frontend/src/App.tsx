@@ -99,8 +99,8 @@ function App() {
       }
 
       const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' }) as string[]
-      setAccount(accounts[0])
-      showStatus('Wallet connected!')
+      const addr = accounts[0]
+      setAccount(addr)
 
       // Try to switch to our network
       try {
@@ -123,6 +123,8 @@ function App() {
           throw switchError
         }
       }
+
+      showStatus('Wallet connected! Please register your viewing key.')
     } catch (e) {
       showStatus((e as Error).message, 'error')
     }
@@ -139,10 +141,12 @@ function App() {
       const signature = await window.ethereum!.request({
         method: 'personal_sign',
         params: [message, account],
-      })
+      }) as string
 
       await rpc('privacy_registerViewingKey', [account, signature])
+
       setRegistered(true)
+      setLoading(null)
       showStatus('Viewing key registered! You can now use private transactions.')
     } catch (e) {
       setLoading(null)

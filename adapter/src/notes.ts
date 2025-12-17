@@ -28,7 +28,8 @@ export interface SessionKeys {
   address: string; // Ethereum address
   viewingKey: Uint8Array; // For decryption
   nullifierKey: bigint; // For computing nullifiers
-  encryptionPubKey: Uint8Array; // Public key for ECIES
+  encryptionPubKey: Uint8Array; // Public key for ECIES (33 bytes compressed)
+  encryptionPrivKey?: Uint8Array; // Private key for ECIES decryption (32 bytes)
 }
 
 /**

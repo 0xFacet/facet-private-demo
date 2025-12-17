@@ -28,31 +28,38 @@ contract PrivacyPoolTest is Test {
     // ==================== Registry Tests ====================
 
     function test_Registry_Register() public {
-        bytes32 pkEnc = bytes32(uint256(123456));
+        // 33-byte compressed public key: 0x02 prefix + 32-byte x-coordinate
+        bytes memory pkEnc = abi.encodePacked(bytes1(0x02), bytes32(uint256(123456)));
 
-        vm.prank(alice);
-        registry.register(pkEnc);
+        // World-writable: anyone can register for anyone
+        registry.register(alice, pkEnc);
 
         assertTrue(registry.isRegistered(alice));
-        assertEq(registry.getEncryptionKey(alice), pkEnc);
+        assertEq(keccak256(registry.getEncryptionKey(alice)), keccak256(pkEnc));
     }
 
     function test_Registry_CannotRegisterTwice() public {
-        bytes32 pkEnc1 = bytes32(uint256(123456));
-        bytes32 pkEnc2 = bytes32(uint256(789012));
+        bytes memory pkEnc1 = abi.encodePacked(bytes1(0x02), bytes32(uint256(123456)));
+        bytes memory pkEnc2 = abi.encodePacked(bytes1(0x03), bytes32(uint256(789012)));
 
-        vm.prank(alice);
-        registry.register(pkEnc1);
+        registry.register(alice, pkEnc1);
 
-        vm.prank(alice);
         vm.expectRevert("Already registered");
-        registry.register(pkEnc2);
+        registry.register(alice, pkEnc2);
     }
 
-    function test_Registry_CannotRegisterZero() public {
-        vm.prank(alice);
-        vm.expectRevert("Invalid public key");
-        registry.register(bytes32(0));
+    function test_Registry_CannotRegisterInvalidLength() public {
+        bytes memory invalidKey = abi.encodePacked(bytes32(uint256(123456))); // 32 bytes, not 33
+
+        vm.expectRevert("Invalid public key length");
+        registry.register(alice, invalidKey);
+    }
+
+    function test_Registry_CannotRegisterInvalidPrefix() public {
+        bytes memory invalidKey = abi.encodePacked(bytes1(0x04), bytes32(uint256(123456))); // invalid prefix
+
+        vm.expectRevert("Invalid public key prefix");
+        registry.register(alice, invalidKey);
     }
 
     // ==================== Pool Initialization Tests ====================
