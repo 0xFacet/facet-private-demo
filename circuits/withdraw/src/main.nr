@@ -73,12 +73,18 @@ fn main(
     // Secret key for nullifier derivation
     nullifier_key: Field,
 ) {
+    // ========================== 0. VALIDATE PUBLIC INPUT BOUNDS ==========================
+    // withdraw_amount is a pub Field but used as u128 in value checks.
+    // Validate it fits in u128 to prevent silent truncation attacks.
+    let withdraw_amount_u128 = withdraw_amount as u128;
+    assert(withdraw_amount_u128 as Field == withdraw_amount, "withdraw_amount exceeds u128");
+
     // ========================== 1. COMPUTE SIGNING HASH ==========================
     // CRITICAL: This binds the ECDSA signature to the actual transaction fields
     // For withdrawals, user signs tx to SENTINEL address (0x1), not the actual recipient
     // This matches the UX where sending to sentinel triggers a withdrawal
 
-    let signing_hash = compute_eip1559_signing_hash(tx_nonce, WITHDRAW_SENTINEL, withdraw_amount as u128);
+    let signing_hash = compute_eip1559_signing_hash(tx_nonce, WITHDRAW_SENTINEL, withdraw_amount_u128);
 
     // ========================== 2. VERIFY ECDSA SIGNATURE ==========================
     // Signature must be over the EIP-1559 signing hash we just computed
@@ -110,7 +116,10 @@ fn main(
     // ========================== 5. VERIFY INPUT NOTE 1 ==========================
     // Phantom zero-input: When input_1_amount == 0, skip merkle verification.
     // This allows single-note transactions without requiring a "dust note" deposit.
-    // The nullifier is still computed to prevent replay attacks.
+    //
+    // NOTE: Phantom inputs allow arbitrary nullifier_1 values, causing potential
+    // nullifier set bloat. Production systems should use a sentinel (nullifier_1=0)
+    // pattern. Acceptable for demo since it doesn't enable value theft.
 
     let commitment_1 = hash_3([input_1_amount as Field, signer_address, input_1_randomness]);
 
@@ -144,7 +153,7 @@ fn main(
     // inputs = change + withdraw_amount
 
     let total_in = input_0_amount + input_1_amount;
-    let total_out = change_amount + withdraw_amount as u128;
+    let total_out = change_amount + withdraw_amount_u128;
     assert(total_in == total_out, "Value not conserved");
 
     // ========================== 9. INTENT NULLIFIER ==========================
@@ -421,3 +430,4 @@ fn test_signing_hash_matches_viem_withdrawal() {
 
     assert(hash == expected, "Signing hash does not match viem fixture");
 }
+

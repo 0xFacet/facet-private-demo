@@ -111,7 +111,10 @@ fn main(
     // ========================== 5. VERIFY INPUT NOTE 1 ==========================
     // Phantom zero-input: When input_1_amount == 0, skip merkle verification.
     // This allows single-note transactions without requiring a "dust note" deposit.
-    // The nullifier is still computed to prevent replay attacks.
+    //
+    // NOTE: Phantom inputs allow arbitrary nullifier_1 values, causing potential
+    // nullifier set bloat. Production systems should use a sentinel (nullifier_1=0)
+    // pattern. Acceptable for demo since it doesn't enable value theft.
 
     let commitment_1 = hash_3([input_1_amount as Field, signer_address, input_1_randomness]);
 
