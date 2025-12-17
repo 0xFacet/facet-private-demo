@@ -1,3 +1,111 @@
+## Prerequisites
+
+### Required Tools
+
+This project requires the following tools to be installed:
+
+#### 1. Foundry (Forge)
+
+Foundry is used for Solidity smart contract development and testing.
+
+```bash
+# Install foundryup
+curl -L https://foundry.paradigm.xyz | bash
+
+# Install foundry
+foundryup
+```
+
+After installation, verify with:
+```bash
+forge --version
+```
+
+#### 2. Noir (Nargo)
+
+Noir is the ZK circuit language used for the privacy proofs. Install version `1.0.0-beta.16` or compatible.
+
+```bash
+# Install noirup
+curl -L https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install | bash
+
+# Install nargo (specific version)
+noirup -v 1.0.0-beta.16
+```
+
+After installation, verify with:
+```bash
+nargo --version
+```
+
+#### 3. Barretenberg (bb)
+
+Barretenberg is the proving backend for Noir circuits. Use `bbup` to install it.
+
+```bash
+# Install bbup
+curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/refs/heads/master/barretenberg/bbup/install | bash
+
+# Install bb (use nightly for latest features, or a specific version)
+bbup --nightly
+```
+
+After installation, verify with:
+```bash
+bb --version
+```
+
+> **Note**: The `bb` version should be compatible with your `nargo` version. For nargo `1.0.0-beta.x`, use the nightly build or check the [Noir documentation](https://noir-lang.org/docs/getting_started/quick_start) for version compatibility.
+
+#### 4. Node.js
+
+Node.js is required for the adapter and frontend components.
+
+```bash
+# Using nvm (recommended)
+nvm install 20
+nvm use 20
+
+# Or download from https://nodejs.org/
+```
+
+After installation, verify with:
+```bash
+node --version  # Should be v20.x or later
+```
+
+### Project Setup
+
+After installing the prerequisites:
+
+```bash
+# Clone the repository
+git clone <repo-url>
+cd facet-private-demo
+
+# Install contract dependencies
+cd contracts
+forge install
+cd ..
+
+# Install fixture dependencies
+cd fixtures
+npm install
+cd ..
+
+# Install adapter dependencies
+cd adapter
+npm install
+cd ..
+
+# Install frontend dependencies
+cd frontend
+npm install
+cd ..
+```
+
+---
+
 ## Introduction: Why This Architecture Exists
 
 ### The Problem with Private Transactions Today
