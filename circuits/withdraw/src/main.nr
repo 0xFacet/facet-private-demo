@@ -22,10 +22,11 @@ global TREE_DEPTH: u32 = 20;
 global VIRTUAL_CHAIN_ID: Field = 13371337;
 
 // Fixed gas params for EIP-1559 tx (must match adapter)
+// Using 1 for all gas params - simpler RLP encoding than 0
 global CHAIN_ID: u64 = 13371337;
-global MAX_PRIORITY_FEE_PER_GAS: u64 = 1000000000; // 1 gwei
-global MAX_FEE_PER_GAS: u64 = 30000000000; // 30 gwei
-global GAS_LIMIT: u64 = 21000; // simple transfer
+global MAX_PRIORITY_FEE_PER_GAS: u64 = 1;
+global MAX_FEE_PER_GAS: u64 = 1;
+global GAS_LIMIT: u64 = 1;
 
 // Maximum RLP encoded length for EIP-1559 tx with our fixed params
 global MAX_RLP_LEN: u32 = 128;
@@ -228,34 +229,17 @@ fn compute_eip1559_signing_hash(nonce: u64, to: Field, value: u128) -> [u8; 32] 
         }
     }
 
-    // 3. maxPriorityFeePerGas = 1 gwei (0x3B9ACA00) - 4 bytes, needs prefix 0x84
-    let priority_bytes = u64_to_be_bytes(MAX_PRIORITY_FEE_PER_GAS);
-    // 1 gwei = 0x3B9ACA00, starts at byte 4, length 4
-    rlp_buffer[pos] = 0x84; // 0x80 + 4
-    rlp_buffer[pos + 1] = priority_bytes[4];
-    rlp_buffer[pos + 2] = priority_bytes[5];
-    rlp_buffer[pos + 3] = priority_bytes[6];
-    rlp_buffer[pos + 4] = priority_bytes[7];
-    pos += 5;
+    // 3. maxPriorityFeePerGas = 1 (single byte, value < 128)
+    rlp_buffer[pos] = 0x01;
+    pos += 1;
 
-    // 4. maxFeePerGas = 30 gwei (0x06FC23AC00) - 5 bytes, needs prefix 0x85
-    let fee_bytes = u64_to_be_bytes(MAX_FEE_PER_GAS);
-    // 30 gwei = 0x06FC23AC00, starts at byte 3, length 5
-    rlp_buffer[pos] = 0x85; // 0x80 + 5
-    rlp_buffer[pos + 1] = fee_bytes[3];
-    rlp_buffer[pos + 2] = fee_bytes[4];
-    rlp_buffer[pos + 3] = fee_bytes[5];
-    rlp_buffer[pos + 4] = fee_bytes[6];
-    rlp_buffer[pos + 5] = fee_bytes[7];
-    pos += 6;
+    // 4. maxFeePerGas = 1 (single byte, value < 128)
+    rlp_buffer[pos] = 0x01;
+    pos += 1;
 
-    // 5. gasLimit = 21000 (0x5208) - 2 bytes, needs prefix 0x82
-    let gas_bytes = u64_to_be_bytes(GAS_LIMIT);
-    // 21000 = 0x5208, starts at byte 6, length 2
-    rlp_buffer[pos] = 0x82; // 0x80 + 2
-    rlp_buffer[pos + 1] = gas_bytes[6];
-    rlp_buffer[pos + 2] = gas_bytes[7];
-    pos += 3;
+    // 5. gasLimit = 1 (single byte, value < 128)
+    rlp_buffer[pos] = 0x01;
+    pos += 1;
 
     // 6. to = 20-byte address, prefix 0x94
     rlp_buffer[pos] = 0x94; // 0x80 + 20

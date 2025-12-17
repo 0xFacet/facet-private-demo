@@ -197,6 +197,16 @@ export class MerkleTree {
   }
 
   /**
+   * Reset the tree to empty state
+   * Used before re-syncing from chain
+   */
+  reset(): void {
+    this.leaves = [];
+    this.nextIndex = 0;
+    this.filledSubtrees = [...this.zeros];
+  }
+
+  /**
    * Get a leaf by index
    */
   getLeaf(index: number): bigint {

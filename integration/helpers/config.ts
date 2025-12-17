@@ -13,9 +13,10 @@ export const FIELD_SIZE = 218882428718392752222464057452572750885483644004160343
 export const WITHDRAW_SENTINEL = '0x0000000000000000000000000000000000000001';
 
 // Fixed gas parameters (must match circuit constants)
-export const FIXED_MAX_PRIORITY_FEE = 1000000000n;  // 1 gwei
-export const FIXED_MAX_FEE = 30000000000n;           // 30 gwei
-export const FIXED_GAS_LIMIT = 21000n;               // simple transfer
+// Using 1/1/1 for simpler RLP encoding (single byte 0x01)
+export const FIXED_MAX_PRIORITY_FEE = 1n;
+export const FIXED_MAX_FEE = 1n;
+export const FIXED_GAS_LIMIT = 1n;
 
 // Anvil default test accounts
 export const TEST_PRIVATE_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';

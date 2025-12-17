@@ -1,6 +1,9 @@
 // Facet Private Adapter
 // JSON-RPC server that enables private transfers via MetaMask
 
+// Load environment variables first, before any other imports
+import 'dotenv/config';
+
 import { initPoseidon } from './crypto/poseidon.js';
 import { RpcAdapter } from './rpc.js';
 

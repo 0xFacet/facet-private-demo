@@ -1,3 +1,64 @@
+# Facet Private Demo
+
+Private ETH transactions with ZK proofs on Ethereum Sepolia.
+
+## Quick Start: Running the MetaMask Demo
+
+### 1. Start the Adapter
+
+```bash
+cd adapter
+npm install
+npm run dev
+```
+
+The adapter listens on `http://localhost:8546`.
+
+### 2. Start the Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173` in your browser.
+
+### 3. Connect MetaMask
+
+1. Click "Connect Wallet" - the app will prompt you to add the network:
+   - **Network Name**: Facet Private (Demo)
+   - **RPC URL**: http://localhost:8546
+   - **Chain ID**: 13371337
+   - **Symbol**: ETH
+
+2. Click "Register Viewing Key" and sign the message
+
+### 4. Use the Demo
+
+**Important**: The circuit requires 2 input notes. Make at least **2 deposits** before transferring.
+
+1. **Deposit**: Enter amount (e.g., 0.01 ETH), click "Deposit to Pool"
+2. **Deposit again**: Make a second deposit
+3. **Transfer**: Enter recipient address and amount, click "Send Privately"
+4. **Withdraw**: Enter amount, click "Withdraw to Wallet"
+
+Proof generation takes ~30 seconds per operation.
+
+### Running E2E Tests
+
+```bash
+# Terminal 1: Start anvil
+anvil
+
+# Terminal 2: Run tests
+cd integration
+npm install
+npx tsx e2e-transfer.ts
+```
+
+---
+
 ## Prerequisites
 
 ### Required Tools

@@ -71,7 +71,7 @@ export function computeNullifier(commitment: bigint, nullifierKey: bigint): bigi
 }
 
 /**
- * Compute an intent nullifier
+ * Compute an intent nullifier for transfers
  * intentNullifier = poseidon(signer, chainId, nonce, to, value)
  */
 export function computeIntentNullifier(
@@ -82,4 +82,18 @@ export function computeIntentNullifier(
   value: bigint
 ): bigint {
   return poseidon5([signer, chainId, nonce, to, value]);
+}
+
+/**
+ * Compute an intent nullifier for withdrawals
+ * intentNullifier = poseidon(signer, chainId, nonce, WITHDRAW_SENTINEL, value)
+ */
+export function computeWithdrawIntentNullifier(
+  signer: bigint,
+  chainId: bigint,
+  nonce: bigint,
+  value: bigint
+): bigint {
+  const WITHDRAW_SENTINEL = 1n;
+  return poseidon5([signer, chainId, nonce, WITHDRAW_SENTINEL, value]);
 }
