@@ -1,0 +1,398 @@
+// ZK Proof generation using noir_js and bb.js
+
+import { Noir } from '@noir-lang/noir_js';
+import { UltraHonkBackend, ProofData } from '@aztec/bb.js';
+import { readFileSync, writeFileSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { Hex, hexToBytes, bytesToHex } from 'viem';
+
+import { TREE_DEPTH, VIRTUAL_CHAIN_ID } from './config.js';
+import { MerkleProof } from './merkle.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Backend options - use keccak hash for Solidity verifier compatibility
+const BACKEND_OPTIONS = { keccak: true };
+
+// Circuit artifact paths
+const TRANSFER_CIRCUIT_PATH = resolve(__dirname, '../../circuits/transfer/target/transfer.json');
+const WITHDRAW_CIRCUIT_PATH = resolve(__dirname, '../../circuits/withdraw/target/withdraw.json');
+
+/**
+ * Note data for circuit input
+ */
+export interface NoteInput {
+  amount: bigint;
+  randomness: bigint;
+  leafIndex: number;
+  siblings: bigint[];
+}
+
+/**
+ * Signature data from signed transaction
+ */
+export interface SignatureData {
+  pubKeyX: Uint8Array;  // 32 bytes
+  pubKeyY: Uint8Array;  // 32 bytes
+  signature: Uint8Array; // 64 bytes (r || s)
+}
+
+/**
+ * Transfer circuit inputs
+ */
+export interface TransferCircuitInputs {
+  // Public inputs
+  merkleRoot: bigint;
+  nullifier0: bigint;
+  nullifier1: bigint;
+  outputCommitment0: bigint;
+  outputCommitment1: bigint;
+  intentNullifier: bigint;
+
+  // Private inputs
+  signatureData: SignatureData;
+  txNonce: bigint;
+  txTo: bigint;
+  txValue: bigint;
+
+  input0: NoteInput;
+  input1: NoteInput;
+
+  output0Amount: bigint;
+  output0Owner: bigint;
+  output0Randomness: bigint;
+
+  output1Amount: bigint;
+  output1Randomness: bigint;
+
+  nullifierKey: bigint;
+}
+
+/**
+ * Withdraw circuit inputs
+ */
+export interface WithdrawCircuitInputs {
+  // Public inputs
+  merkleRoot: bigint;
+  nullifier0: bigint;
+  nullifier1: bigint;
+  changeCommitment: bigint;
+  intentNullifier: bigint;
+  withdrawRecipient: bigint;  // Must equal signer address
+  withdrawAmount: bigint;
+
+  // Private inputs
+  signatureData: SignatureData;
+  txNonce: bigint;
+
+  input0: NoteInput;
+  input1: NoteInput;
+
+  changeAmount: bigint;
+  changeRandomness: bigint;
+
+  nullifierKey: bigint;
+}
+
+/**
+ * Load the transfer circuit
+ */
+export function loadTransferCircuit(): any {
+  const circuitJson = readFileSync(TRANSFER_CIRCUIT_PATH, 'utf-8');
+  return JSON.parse(circuitJson);
+}
+
+/**
+ * Load the withdraw circuit
+ */
+export function loadWithdrawCircuit(): any {
+  const circuitJson = readFileSync(WITHDRAW_CIRCUIT_PATH, 'utf-8');
+  return JSON.parse(circuitJson);
+}
+
+/**
+ * Convert bigint to string for Noir input
+ */
+function toNoirField(value: bigint): string {
+  return '0x' + value.toString(16);
+}
+
+/**
+ * Convert byte array to Noir array format
+ */
+function toNoirByteArray(bytes: Uint8Array): string[] {
+  return Array.from(bytes).map(b => b.toString());
+}
+
+/**
+ * Convert bigint array to Noir array format
+ */
+function toNoirFieldArray(values: bigint[]): string[] {
+  return values.map(v => toNoirField(v));
+}
+
+/**
+ * Build circuit inputs object for Noir
+ */
+export function buildTransferInputs(inputs: TransferCircuitInputs): Record<string, any> {
+  return {
+    // Public inputs
+    merkle_root: toNoirField(inputs.merkleRoot),
+    nullifier_0: toNoirField(inputs.nullifier0),
+    nullifier_1: toNoirField(inputs.nullifier1),
+    output_commitment_0: toNoirField(inputs.outputCommitment0),
+    output_commitment_1: toNoirField(inputs.outputCommitment1),
+    intent_nullifier: toNoirField(inputs.intentNullifier),
+
+    // Signature
+    pub_key_x: toNoirByteArray(inputs.signatureData.pubKeyX),
+    pub_key_y: toNoirByteArray(inputs.signatureData.pubKeyY),
+    signature: toNoirByteArray(inputs.signatureData.signature),
+
+    // Transaction fields
+    tx_nonce: inputs.txNonce.toString(),
+    tx_to: toNoirField(inputs.txTo),
+    tx_value: inputs.txValue.toString(),
+
+    // Input note 0
+    input_0_amount: inputs.input0.amount.toString(),
+    input_0_randomness: toNoirField(inputs.input0.randomness),
+    input_0_leaf_index: inputs.input0.leafIndex.toString(),
+    input_0_siblings: toNoirFieldArray(inputs.input0.siblings),
+
+    // Input note 1
+    input_1_amount: inputs.input1.amount.toString(),
+    input_1_randomness: toNoirField(inputs.input1.randomness),
+    input_1_leaf_index: inputs.input1.leafIndex.toString(),
+    input_1_siblings: toNoirFieldArray(inputs.input1.siblings),
+
+    // Output note 0
+    output_0_amount: inputs.output0Amount.toString(),
+    output_0_owner: toNoirField(inputs.output0Owner),
+    output_0_randomness: toNoirField(inputs.output0Randomness),
+
+    // Output note 1
+    output_1_amount: inputs.output1Amount.toString(),
+    output_1_randomness: toNoirField(inputs.output1Randomness),
+
+    // Nullifier key
+    nullifier_key: toNoirField(inputs.nullifierKey),
+  };
+}
+
+/**
+ * Generate a transfer proof
+ */
+export async function generateTransferProof(inputs: TransferCircuitInputs): Promise<{
+  proof: Uint8Array;
+  publicInputs: bigint[];
+}> {
+  console.log('Loading transfer circuit...');
+  const circuit = loadTransferCircuit();
+
+  console.log('Initializing Noir backend...');
+  const backend = new UltraHonkBackend(circuit.bytecode);
+  const noir = new Noir(circuit);
+
+  console.log('Building circuit inputs...');
+  const noirInputs = buildTransferInputs(inputs);
+
+  console.log('Executing circuit (computing witness)...');
+  const { witness } = await noir.execute(noirInputs);
+
+  console.log('Generating proof (keccak mode for Solidity compatibility)...');
+  const proofData = await backend.generateProof(witness, BACKEND_OPTIONS);
+
+  console.log('Proof generated successfully!');
+
+  // Extract public inputs in order
+  const publicInputs = [
+    inputs.merkleRoot,
+    inputs.nullifier0,
+    inputs.nullifier1,
+    inputs.outputCommitment0,
+    inputs.outputCommitment1,
+    inputs.intentNullifier,
+  ];
+
+  return {
+    proof: proofData.proof,
+    publicInputs,
+  };
+}
+
+/**
+ * Build circuit inputs object for Noir (withdraw circuit)
+ */
+export function buildWithdrawInputs(inputs: WithdrawCircuitInputs): Record<string, any> {
+  return {
+    // Public inputs
+    merkle_root: toNoirField(inputs.merkleRoot),
+    nullifier_0: toNoirField(inputs.nullifier0),
+    nullifier_1: toNoirField(inputs.nullifier1),
+    change_commitment: toNoirField(inputs.changeCommitment),
+    intent_nullifier: toNoirField(inputs.intentNullifier),
+    withdraw_recipient: toNoirField(inputs.withdrawRecipient),
+    withdraw_amount: inputs.withdrawAmount.toString(),
+
+    // Signature
+    pub_key_x: toNoirByteArray(inputs.signatureData.pubKeyX),
+    pub_key_y: toNoirByteArray(inputs.signatureData.pubKeyY),
+    signature: toNoirByteArray(inputs.signatureData.signature),
+
+    // Transaction nonce
+    tx_nonce: inputs.txNonce.toString(),
+
+    // Input note 0
+    input_0_amount: inputs.input0.amount.toString(),
+    input_0_randomness: toNoirField(inputs.input0.randomness),
+    input_0_leaf_index: inputs.input0.leafIndex.toString(),
+    input_0_siblings: toNoirFieldArray(inputs.input0.siblings),
+
+    // Input note 1
+    input_1_amount: inputs.input1.amount.toString(),
+    input_1_randomness: toNoirField(inputs.input1.randomness),
+    input_1_leaf_index: inputs.input1.leafIndex.toString(),
+    input_1_siblings: toNoirFieldArray(inputs.input1.siblings),
+
+    // Change note
+    change_amount: inputs.changeAmount.toString(),
+    change_randomness: toNoirField(inputs.changeRandomness),
+
+    // Nullifier key
+    nullifier_key: toNoirField(inputs.nullifierKey),
+  };
+}
+
+/**
+ * Generate a withdraw proof
+ */
+export async function generateWithdrawProof(inputs: WithdrawCircuitInputs): Promise<{
+  proof: Uint8Array;
+  publicInputs: bigint[];
+}> {
+  console.log('Loading withdraw circuit...');
+  const circuit = loadWithdrawCircuit();
+
+  console.log('Initializing Noir backend...');
+  const backend = new UltraHonkBackend(circuit.bytecode);
+  const noir = new Noir(circuit);
+
+  console.log('Building circuit inputs...');
+  const noirInputs = buildWithdrawInputs(inputs);
+
+  console.log('Executing circuit (computing witness)...');
+  const { witness } = await noir.execute(noirInputs);
+
+  console.log('Generating proof (keccak mode for Solidity compatibility)...');
+  const proofData = await backend.generateProof(witness, BACKEND_OPTIONS);
+
+  console.log('Proof generated successfully!');
+
+  // Extract public inputs in order
+  const publicInputs = [
+    inputs.merkleRoot,
+    inputs.nullifier0,
+    inputs.nullifier1,
+    inputs.changeCommitment,
+    inputs.intentNullifier,
+    inputs.withdrawRecipient,
+    inputs.withdrawAmount,
+  ];
+
+  return {
+    proof: proofData.proof,
+    publicInputs,
+  };
+}
+
+/**
+ * Convert public inputs to bytes32 array for Solidity
+ */
+export function publicInputsToBytes32Array(inputs: bigint[]): Hex[] {
+  return inputs.map(v => {
+    const hex = v.toString(16).padStart(64, '0');
+    return `0x${hex}` as Hex;
+  });
+}
+
+/**
+ * Extract signature components from signed transaction
+ */
+export function extractSignatureFromTx(
+  r: Hex,
+  s: Hex,
+  pubKeyUncompressed: Hex
+): SignatureData {
+  // Remove 0x prefix and convert
+  const rBytes = hexToBytes(r);
+  const sBytes = hexToBytes(s);
+
+  // Pubkey uncompressed is 0x04 || x || y (65 bytes total)
+  const pubKeyBytes = hexToBytes(pubKeyUncompressed);
+  if (pubKeyBytes.length !== 65 || pubKeyBytes[0] !== 0x04) {
+    throw new Error('Invalid uncompressed public key format');
+  }
+
+  const pubKeyX = pubKeyBytes.slice(1, 33);
+  const pubKeyY = pubKeyBytes.slice(33, 65);
+
+  // Signature is r || s
+  const signature = new Uint8Array(64);
+  signature.set(rBytes, 0);
+  signature.set(sBytes, 32);
+
+  return {
+    pubKeyX,
+    pubKeyY,
+    signature,
+  };
+}
+
+/**
+ * Generate Solidity verifier contract via bb.js
+ * This ensures consistency with proof generation (both use keccak mode)
+ */
+export async function generateSolidityVerifier(circuitPath: string, outputPath: string, contractName?: string): Promise<void> {
+  console.log(`Loading circuit from ${circuitPath}...`);
+  const circuitJson = readFileSync(circuitPath, 'utf-8');
+  const circuit = JSON.parse(circuitJson);
+
+  console.log('Initializing backend...');
+  const backend = new UltraHonkBackend(circuit.bytecode);
+
+  console.log('Getting verification key (keccak mode)...');
+  const vk = await backend.getVerificationKey(BACKEND_OPTIONS);
+
+  console.log('Generating Solidity verifier...');
+  let verifierSol = await backend.getSolidityVerifier(vk, BACKEND_OPTIONS);
+
+  // Rename contract if specified
+  if (contractName) {
+    verifierSol = verifierSol.replace(/contract HonkVerifier/g, `contract ${contractName}`);
+  }
+
+  writeFileSync(outputPath, verifierSol);
+  console.log(`Solidity verifier written to ${outputPath}`);
+}
+
+/**
+ * Generate both transfer and withdraw verifiers
+ */
+export async function generateAllVerifiers(): Promise<void> {
+  const contractsVerifiersDir = resolve(__dirname, '../../contracts/verifiers');
+
+  await generateSolidityVerifier(
+    TRANSFER_CIRCUIT_PATH,
+    resolve(contractsVerifiersDir, 'TransferVerifier.sol'),
+    'HonkVerifier'
+  );
+
+  await generateSolidityVerifier(
+    WITHDRAW_CIRCUIT_PATH,
+    resolve(contractsVerifiersDir, 'WithdrawVerifier.sol'),
+    'WithdrawHonkVerifier'
+  );
+}

@@ -1,3 +1,58 @@
+# Privacy Pool Contracts
+
+## Regenerating Verifier Contracts
+
+When you modify the Noir circuits (`circuits/transfer/` or `circuits/withdraw/`), you must regenerate the Solidity verifier contracts. **This is critical** - the verifier must match the circuit exactly.
+
+### Method: Use bb.js (Recommended)
+
+The `bb` CLI can fail with assertion errors. Use bb.js programmatically instead:
+
+```bash
+cd integration
+npm install
+npx tsx generate-verifiers.ts
+cd ../contracts
+forge build
+```
+
+This script generates verifiers via bb.js with `{ keccak: true }` option, which ensures consistency with proof generation.
+
+### Why keccak mode?
+
+- Proofs generated with `{ keccak: true }` use keccak hashing (efficient in Solidity)
+- The verifier contract must be generated with the same option
+- Mismatched modes = proof verification fails on-chain
+
+### Version Compatibility
+
+The following versions must be aligned:
+
+| Component | Version | Notes |
+|-----------|---------|-------|
+| nargo | 1.0.0-beta.16 | Circuit compiler |
+| @noir-lang/noir_js | 1.0.0-beta.16 | Must match nargo |
+| @aztec/bb.js | 3.0.0-nightly.20251104 | Proving backend |
+
+If you update nargo, you must also update the npm packages in `integration/package.json`.
+
+### Testing
+
+After regenerating verifiers:
+
+```bash
+# Start anvil (in a separate terminal)
+anvil
+
+# Run E2E test
+cd integration
+npx tsx e2e-transfer.ts
+```
+
+Note: The E2E test assumes anvil is already running on `localhost:8545`.
+
+---
+
 ## Foundry
 
 **Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**

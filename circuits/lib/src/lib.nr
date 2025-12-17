@@ -1,7 +1,9 @@
 // Merkle tree verification library
 // Uses Poseidon hash for BN254 compatibility
 
-use std::hash::poseidon;
+use poseidon::poseidon::bn254::hash_2;
+use poseidon::poseidon::bn254::hash_3;
+use poseidon::poseidon::bn254::hash_5;
 
 /// Verify a merkle proof for a leaf
 /// Returns true if the proof is valid
@@ -36,7 +38,7 @@ pub fn compute_merkle_root<let DEPTH: u32>(
             (current_hash, sibling)
         };
 
-        current_hash = poseidon::bn254::hash_2([left, right]);
+        current_hash = hash_2([left, right]);
         current_index = current_index >> 1;
     }
 
@@ -45,12 +47,12 @@ pub fn compute_merkle_root<let DEPTH: u32>(
 
 /// Compute a note commitment: poseidon(amount, owner, randomness)
 pub fn compute_commitment(amount: Field, owner: Field, randomness: Field) -> Field {
-    poseidon::bn254::hash_3([amount, owner, randomness])
+    hash_3([amount, owner, randomness])
 }
 
 /// Compute a nullifier: poseidon(commitment, nullifier_key)
 pub fn compute_nullifier(commitment: Field, nullifier_key: Field) -> Field {
-    poseidon::bn254::hash_2([commitment, nullifier_key])
+    hash_2([commitment, nullifier_key])
 }
 
 /// Compute an intent nullifier: poseidon(signer, chain_id, nonce, to, value)
@@ -61,21 +63,21 @@ pub fn compute_intent_nullifier(
     to: Field,
     value: Field
 ) -> Field {
-    poseidon::bn254::hash_5([signer, chain_id, nonce, to, value])
+    hash_5([signer, chain_id, nonce, to, value])
 }
 
 #[test]
 fn test_merkle_single_leaf() {
     // Test with a simple case: single leaf at index 0
     // All siblings are zeros (empty tree positions)
-    let zero = poseidon::bn254::hash_2([0, 0]);
+    let zero = hash_2([0, 0]);
     let leaf: Field = 12345;
 
     // Build siblings array (all zeros at each level)
     let mut siblings: [Field; 3] = [0; 3];
     siblings[0] = zero;
-    siblings[1] = poseidon::bn254::hash_2([zero, zero]);
-    siblings[2] = poseidon::bn254::hash_2([siblings[1], siblings[1]]);
+    siblings[1] = hash_2([zero, zero]);
+    siblings[2] = hash_2([siblings[1], siblings[1]]);
 
     let root = compute_merkle_root(leaf, 0, siblings);
 

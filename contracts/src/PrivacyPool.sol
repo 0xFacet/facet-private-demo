@@ -165,14 +165,15 @@ contract PrivacyPool {
         if (intentUsed[intentNullifier]) revert IntentAlreadyUsed();
 
         // Build public inputs for verifier
-        bytes32[] memory publicInputs = new bytes32[](7);
+        // Note: tx fields (to, value, nonce) are now private inputs in circuit
+        // Chain ID is verified as constant inside circuit
+        bytes32[] memory publicInputs = new bytes32[](6);
         publicInputs[0] = bytes32(merkleRoot);
         publicInputs[1] = bytes32(nullifiers[0]);
         publicInputs[2] = bytes32(nullifiers[1]);
         publicInputs[3] = bytes32(outputCommitments[0]);
         publicInputs[4] = bytes32(outputCommitments[1]);
         publicInputs[5] = bytes32(intentNullifier);
-        publicInputs[6] = bytes32(VIRTUAL_CHAIN_ID);
 
         // Verify proof
         if (!transferVerifier.verify(proof, publicInputs)) revert InvalidProof();
@@ -230,7 +231,10 @@ contract PrivacyPool {
         if (address(this).balance < amount) revert InsufficientPoolBalance();
 
         // Build public inputs for verifier
-        bytes32[] memory publicInputs = new bytes32[](8);
+        // Order must match circuit: merkle_root, nullifier_0, nullifier_1, change_commitment,
+        // intent_nullifier, withdraw_recipient, withdraw_amount
+        // Note: chain id is verified as a constant inside the circuit.
+        bytes32[] memory publicInputs = new bytes32[](7);
         publicInputs[0] = bytes32(merkleRoot);
         publicInputs[1] = bytes32(nullifiers[0]);
         publicInputs[2] = bytes32(nullifiers[1]);
@@ -238,7 +242,6 @@ contract PrivacyPool {
         publicInputs[4] = bytes32(intentNullifier);
         publicInputs[5] = bytes32(uint256(uint160(recipient)));
         publicInputs[6] = bytes32(amount);
-        publicInputs[7] = bytes32(VIRTUAL_CHAIN_ID);
 
         // Verify proof
         if (!withdrawVerifier.verify(proof, publicInputs)) revert InvalidProof();

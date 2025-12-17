@@ -4,9 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "npx tsx test-flow.ts"
+    "test": "npx tsx test-flow.ts",
+    "e2e": "npx tsx e2e-transfer.ts"
   },
   "dependencies": {
+    "@aztec/bb.js": "3.0.0-nightly.20251104",
+    "@noir-lang/noir_js": "1.0.0-beta.16",
     "circomlibjs": "^0.1.7",
     "viem": "^2.21.0"
   },
