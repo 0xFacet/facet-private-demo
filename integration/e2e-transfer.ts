@@ -387,9 +387,9 @@ async function main() {
   // ==================== SIGN WITHDRAWAL TX ====================
   console.log('\n--- Signing Withdrawal Transaction ---');
 
-  // Withdraw the full recipient note amount (dust note will be added as second input)
-  // Total withdrawal = recipient note + dust note = 0.5 ETH + 1 wei
-  const withdrawAmount = recipientNote.amount + 1n; // Full note + dust
+  // Withdraw the full recipient note amount
+  // With phantom zero-input support, we only need the single real note
+  const withdrawAmount = recipientNote.amount;
   const withdrawNonce = 0n; // Recipient's first tx on virtual chain
 
   // For withdrawal, sign tx to SENTINEL address (0x1)
@@ -429,48 +429,32 @@ async function main() {
   // ==================== BUILD WITHDRAW INPUTS ====================
   console.log('\n--- Building Withdraw Circuit Inputs ---');
 
-  // Get current merkle root from contract
-  const withdrawMerkleRoot = await privacyPool.read.getLastRoot();
-
-  // For withdrawal with single note, we need a second input
-  // The contract requires msg.value > 0, so we deposit a dust note (1 wei) for the recipient
-  const dustNoteRandomness = randomBigInt();
-  const dustNoteAmount = 1n; // 1 wei - minimum allowed
-  const dustNoteOwner = BigInt(recipientAccount.address);
-  const dustNoteCommitment = computeCommitment(dustNoteAmount, dustNoteOwner, dustNoteRandomness);
-
-  console.log('Depositing dust note (1 wei) for second input...');
-  const dustDepositHash = await privacyPool.write.deposit(
-    [dustNoteCommitment, '0x'],
-    { value: dustNoteAmount }
-  );
-  await publicClient.waitForTransactionReceipt({ hash: dustDepositHash });
-  const dustLeafIndex = merkleTree.insert(dustNoteCommitment);
-  console.log(`Dust note at leaf index: ${dustLeafIndex}`);
-
-  // Now get the updated merkle root
-  const updatedWithdrawRoot = await privacyPool.read.getLastRoot();
+  // Verify merkle root is in sync with contract
   const localWithdrawRoot = merkleTree.getRoot();
-
-  if (updatedWithdrawRoot !== localWithdrawRoot) {
-    throw new Error('Merkle root mismatch after zero deposit!');
+  const contractWithdrawRoot = await privacyPool.read.getLastRoot();
+  if (localWithdrawRoot !== contractWithdrawRoot) {
+    throw new Error('Merkle root mismatch before withdrawal!');
   }
+  console.log(`Merkle root: ${localWithdrawRoot.toString(16).slice(0, 16)}...`);
 
-  // Generate merkle proofs
+  // Generate merkle proof for the real input note
   const recipientNoteProof = merkleTree.generateProof(recipientNote.leafIndex);
-  const dustNoteProof = merkleTree.generateProof(dustLeafIndex);
+
+  // Phantom zero-input: second input has amount=0, skips merkle verification
+  // We still need a commitment and nullifier, but the leaf index and siblings are ignored
+  const phantomRandomness = randomBigInt();
+  const phantomCommitment = computeCommitment(0n, BigInt(recipientAccount.address), phantomRandomness);
 
   // Compute nullifiers
   const withdrawNullifier0 = computeNullifier(recipientNote.commitment, recipientNullifierKey);
-  const withdrawNullifier1 = computeNullifier(dustNoteCommitment, recipientNullifierKey);
+  const withdrawNullifier1 = computeNullifier(phantomCommitment, recipientNullifierKey);
   console.log(`Nullifier 0: ${withdrawNullifier0.toString(16).slice(0, 16)}...`);
-  console.log(`Nullifier 1: ${withdrawNullifier1.toString(16).slice(0, 16)}...`);
+  console.log(`Nullifier 1 (phantom): ${withdrawNullifier1.toString(16).slice(0, 16)}...`);
 
-  // Change note (zero change since withdrawing full amount + dust)
-  // Total input = 0.5 ETH + 1 wei, withdraw = 0.5 ETH + 1 wei, change = 0
+  // Change note (zero change since withdrawing full amount)
   const changeAmount = 0n;
   const changeRandomness = randomBigInt();
-  const changeCommitment = computeCommitment(changeAmount, dustNoteOwner, changeRandomness);
+  const changeCommitment = computeCommitment(changeAmount, BigInt(recipientAccount.address), changeRandomness);
 
   // Compute withdraw intent nullifier
   const withdrawIntentNullifier = computeWithdrawIntentNullifier(
@@ -482,6 +466,8 @@ async function main() {
   console.log(`Withdraw intent nullifier: ${withdrawIntentNullifier.toString(16).slice(0, 16)}...`);
 
   // Build withdraw circuit inputs
+  // Phantom input uses amount=0 which triggers the circuit to skip merkle verification
+  // The leaf_index and siblings can be any valid values (zeros work fine)
   const withdrawInputs: WithdrawCircuitInputs = {
     merkleRoot: localWithdrawRoot,
     nullifier0: withdrawNullifier0,
@@ -501,10 +487,11 @@ async function main() {
       siblings: recipientNoteProof.siblings,
     },
     input1: {
-      amount: dustNoteAmount,
-      randomness: dustNoteRandomness,
-      leafIndex: dustLeafIndex,
-      siblings: dustNoteProof.siblings,
+      // Phantom zero-input: amount=0 skips merkle verification
+      amount: 0n,
+      randomness: phantomRandomness,
+      leafIndex: 0, // Ignored since amount=0
+      siblings: Array(20).fill(0n), // Ignored since amount=0
     },
 
     changeAmount,

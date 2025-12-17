@@ -86,6 +86,7 @@ contract PrivacyPool {
     error RecipientNotRegistered();
     error InsufficientPoolBalance();
     error NotOwner();
+    error DuplicateNullifier();
 
     // ========================== CONSTRUCTOR ==========================
 
@@ -161,6 +162,9 @@ contract PrivacyPool {
         if (nullifierSpent[nullifiers[0]]) revert NullifierAlreadySpent();
         if (nullifierSpent[nullifiers[1]]) revert NullifierAlreadySpent();
 
+        // Belt-and-suspenders: prevent duplicate input notes (circuit enforces this too)
+        if (nullifiers[0] == nullifiers[1]) revert DuplicateNullifier();
+
         // Check intent not used
         if (intentUsed[intentNullifier]) revert IntentAlreadyUsed();
 
@@ -223,6 +227,9 @@ contract PrivacyPool {
         // Check nullifiers not spent
         if (nullifierSpent[nullifiers[0]]) revert NullifierAlreadySpent();
         if (nullifierSpent[nullifiers[1]]) revert NullifierAlreadySpent();
+
+        // Belt-and-suspenders: prevent duplicate input notes (circuit enforces this too)
+        if (nullifiers[0] == nullifiers[1]) revert DuplicateNullifier();
 
         // Check intent not used
         if (intentUsed[intentNullifier]) revert IntentAlreadyUsed();

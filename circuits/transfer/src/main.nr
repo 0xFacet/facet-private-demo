@@ -109,10 +109,21 @@ fn main(
     assert(root_0 == merkle_root, "Input 0 merkle proof invalid");
 
     // ========================== 5. VERIFY INPUT NOTE 1 ==========================
+    // Phantom zero-input: When input_1_amount == 0, skip merkle verification.
+    // This allows single-note transactions without requiring a "dust note" deposit.
+    // The nullifier is still computed to prevent replay attacks.
 
     let commitment_1 = hash_3([input_1_amount as Field, signer_address, input_1_randomness]);
-    let root_1 = compute_merkle_root(commitment_1, input_1_leaf_index, input_1_siblings);
-    assert(root_1 == merkle_root, "Input 1 merkle proof invalid");
+
+    // Only verify merkle proof for non-phantom inputs
+    if input_1_amount != 0 {
+        let root_1 = compute_merkle_root(commitment_1, input_1_leaf_index, input_1_siblings);
+        assert(root_1 == merkle_root, "Input 1 merkle proof invalid");
+
+        // CRITICAL: Prevent using the same note twice (inflation attack)
+        // Only checked when input_1 is non-phantom
+        assert(input_0_leaf_index != input_1_leaf_index, "Duplicate input note");
+    }
 
     // ========================== 6. VERIFY NULLIFIERS ==========================
     // nullifier = poseidon(commitment, nullifier_key)
