@@ -242,6 +242,9 @@ export class RpcAdapter {
       case 'privacy_getTestEth':
         return this.getTestEth(params[0] as string);
 
+      case 'privacy_getL1Balance':
+        return this.getL1Balance(params[0] as string);
+
       default:
         throw new Error(`Method ${method} not supported`);
     }
@@ -268,6 +271,11 @@ export class RpcAdapter {
     }
     // Return actual shielded balance (no buffer)
     return toHex(session.noteStore.getBalance());
+  }
+
+  private async getL1Balance(address: string): Promise<string> {
+    const balance = await l1Public.getBalance({ address: address as Hex });
+    return toHex(balance);
   }
 
   private getTransactionCount(address: string): string {

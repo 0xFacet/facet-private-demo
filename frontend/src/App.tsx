@@ -46,6 +46,7 @@ function App() {
   const [account, setAccount] = useState<string | null>(null)
   const [registered, setRegistered] = useState(false)
   const [balance, setBalance] = useState<string>('--')
+  const [l1Balance, setL1Balance] = useState<string>('--')
   const [notes, setNotes] = useState<Note[]>([])
   const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'pending' } | null>(null)
   const [loading, setLoading] = useState<string | null>(null) // What operation is in progress
@@ -66,8 +67,12 @@ function App() {
   const updateBalance = useCallback(async () => {
     if (!account) return
     try {
-      const bal = await rpc('eth_getBalance', [account, 'latest']) as string
-      setBalance(formatEther(BigInt(bal)) + ' ETH')
+      const [shielded, l1] = await Promise.all([
+        rpc('eth_getBalance', [account, 'latest']) as Promise<string>,
+        rpc('privacy_getL1Balance', [account]) as Promise<string>,
+      ])
+      setBalance(formatEther(BigInt(shielded)) + ' ETH')
+      setL1Balance(formatEther(BigInt(l1)) + ' ETH')
     } catch (e) {
       console.error('Balance error:', e)
     }
@@ -256,9 +261,17 @@ function App() {
 
         {/* Balance Card */}
         <div className="bg-slate-800 rounded-xl p-6">
-          <div className="text-slate-400 text-sm">Shielded Balance</div>
-          <div className="text-3xl font-bold text-cyan-400">{balance}</div>
-          <div className="text-slate-500 text-xs font-mono mt-2 break-all">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <div className="text-slate-400 text-sm">Shielded Balance</div>
+              <div className="text-2xl font-bold text-cyan-400">{balance}</div>
+            </div>
+            <div>
+              <div className="text-slate-400 text-sm">Sepolia Balance</div>
+              <div className="text-2xl font-bold text-emerald-400">{l1Balance}</div>
+            </div>
+          </div>
+          <div className="text-slate-500 text-xs font-mono mt-3 break-all">
             {account || 'Not connected'}
           </div>
         </div>
@@ -296,11 +309,8 @@ function App() {
                 disabled={!!loading}
                 className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 disabled:text-slate-400 font-semibold py-3 px-6 rounded-lg transition"
               >
-                {loading === 'deposit' ? 'Depositing...' : 'Get Test ETH (0.01 ETH)'}
+                {loading === 'deposit' ? 'Depositing...' : 'Get Test Shielded ETH (0.01 ETH)'}
               </button>
-              <p className="text-slate-500 text-xs mt-2 text-center">
-                Deposits 0.01 ETH from your wallet into the privacy pool
-              </p>
             </div>
 
             {/* Transfer */}
