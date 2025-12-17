@@ -249,13 +249,9 @@ export class RpcAdapter {
   private getBalance(address: string): string {
     const session = this.sessions.get(address.toLowerCase());
     if (!session) {
-      return '0x100000000000000000';
+      return '0x0';
     }
-    const shieldedBalance = session.noteStore.getBalance();
-    // Return shielded balance + 100 ETH buffer for MetaMask gas calculations
-    // The relayer pays actual L1 fees, so this is just to satisfy MetaMask
-    const displayBalance = shieldedBalance + 100n * 10n ** 18n;
-    return toHex(displayBalance);
+    return toHex(session.noteStore.getBalance());
   }
 
   private getShieldedBalance(address: string): string {

@@ -66,8 +66,7 @@ function App() {
   const updateBalance = useCallback(async () => {
     if (!account) return
     try {
-      // Use privacy_getShieldedBalance for real balance (eth_getBalance has buffer for MetaMask)
-      const bal = await rpc('privacy_getShieldedBalance', [account]) as string
+      const bal = await rpc('eth_getBalance', [account, 'latest']) as string
       setBalance(formatEther(BigInt(bal)) + ' ETH')
     } catch (e) {
       console.error('Balance error:', e)
