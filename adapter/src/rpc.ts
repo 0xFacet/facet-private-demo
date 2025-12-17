@@ -232,6 +232,9 @@ export class RpcAdapter {
       case 'privacy_getNotes':
         return this.getNotes(params[0] as string);
 
+      case 'privacy_getTestEth':
+        return this.getTestEth(params[0] as string);
+
       default:
         throw new Error(`Method ${method} not supported`);
     }
@@ -782,6 +785,51 @@ export class RpcAdapter {
   }
 
   // ==================== Custom Methods ====================
+
+  private async getTestEth(address: string): Promise<boolean> {
+    const normalizedAddress = address.toLowerCase();
+    const session = this.sessions.get(normalizedAddress);
+    if (!session) {
+      throw new Error('Session not found. Register viewing key first.');
+    }
+
+    const amount = 10000000000000000n; // 0.01 ETH
+    console.log(`[GetTestEth] ${address} getting 0.01 ETH (split into 2 notes)`);
+
+    // Split deposit into 2 notes so user can immediately transfer/withdraw
+    const amount1 = amount / 2n;
+    const amount2 = amount - amount1;
+
+    const owner = BigInt(normalizedAddress);
+
+    // Generate random values for both notes
+    const randomBytes1 = crypto.getRandomValues(new Uint8Array(32));
+    const randomness1 = BigInt('0x' + Array.from(randomBytes1).map(b => b.toString(16).padStart(2, '0')).join('')) % FIELD_SIZE;
+
+    const randomBytes2 = crypto.getRandomValues(new Uint8Array(32));
+    const randomness2 = BigInt('0x' + Array.from(randomBytes2).map(b => b.toString(16).padStart(2, '0')).join('')) % FIELD_SIZE;
+
+    const commitment1 = computeCommitment(amount1, owner, randomness1);
+    const commitment2 = computeCommitment(amount2, owner, randomness2);
+
+    // Submit deposits sequentially (relayer pays)
+    console.log(`[GetTestEth] Submitting 2 L1 deposits: ${amount1} + ${amount2} wei`);
+
+    const l1Hash1 = await submitDeposit(commitment1, amount1);
+    await waitForReceipt(l1Hash1);
+    const leafIndex1 = this.merkleTree.insert(commitment1);
+    const note1 = createNoteWithRandomness(amount1, owner, randomness1, leafIndex1);
+    session.noteStore.addNote(note1);
+
+    const l1Hash2 = await submitDeposit(commitment2, amount2);
+    await waitForReceipt(l1Hash2);
+    const leafIndex2 = this.merkleTree.insert(commitment2);
+    const note2 = createNoteWithRandomness(amount2, owner, randomness2, leafIndex2);
+    session.noteStore.addNote(note2);
+
+    console.log(`[GetTestEth] Complete! leafIndices=${leafIndex1},${leafIndex2}`);
+    return true;
+  }
 
   private async registerViewingKey(address: string, signature: string): Promise<boolean> {
     const normalizedAddress = address.toLowerCase();

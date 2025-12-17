@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'react'
 
 // Configuration
 const ADAPTER_URL = 'http://localhost:8546'
-const POOL_ADDRESS = '0xeb41F491421336Ece3Dd43F060720a63bA917803'
 const WITHDRAW_SENTINEL = '0x0000000000000000000000000000000000000001'
 const VIRTUAL_CHAIN_ID = '0xcc07c9' // 13371337
 
@@ -49,9 +48,9 @@ function App() {
   const [balance, setBalance] = useState<string>('--')
   const [notes, setNotes] = useState<Note[]>([])
   const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'pending' } | null>(null)
+  const [loading, setLoading] = useState<string | null>(null) // What operation is in progress
 
   // Form state
-  const [depositAmount, setDepositAmount] = useState('')
   const [transferTo, setTransferTo] = useState('')
   const [transferAmount, setTransferAmount] = useState('')
   const [withdrawAmount, setWithdrawAmount] = useState('')
@@ -60,6 +59,7 @@ function App() {
     setStatus({ message, type })
     if (type === 'success') {
       setTimeout(() => setStatus(null), 5000)
+      setLoading(null)
     }
   }, [])
 
@@ -133,6 +133,7 @@ function App() {
   const register = async () => {
     try {
       if (!account) return
+      setLoading('register')
       showStatus('Please sign the message in MetaMask...', 'pending')
 
       const message = `Register viewing key for Facet Private\nAddress: ${account}`
@@ -145,38 +146,23 @@ function App() {
       setRegistered(true)
       showStatus('Viewing key registered! You can now use private transactions.')
     } catch (e) {
+      setLoading(null)
       showStatus((e as Error).message, 'error')
     }
   }
 
-  // Deposit
-  const deposit = async () => {
+  // Get Test ETH (fixed 0.01 ETH deposit, relayer pays)
+  const getTestEth = async () => {
     try {
-      if (!depositAmount || parseFloat(depositAmount) <= 0) {
-        throw new Error('Please enter a valid amount')
-      }
+      setLoading('deposit')
+      showStatus('Depositing 0.01 ETH (creating 2 shielded notes)...', 'pending')
 
-      const weiAmount = '0x' + parseEther(depositAmount).toString(16)
-      showStatus('Confirm deposit in MetaMask...', 'pending')
+      await rpc('privacy_getTestEth', [account])
 
-      const txHash = await window.ethereum!.request({
-        method: 'eth_sendTransaction',
-        params: [{ from: account, to: POOL_ADDRESS, value: weiAmount }],
-      }) as string
-
-      showStatus('Deposit submitted! Waiting for confirmation...', 'pending')
-
-      let receipt = null
-      while (!receipt) {
-        await new Promise(r => setTimeout(r, 2000))
-        receipt = await rpc('eth_getTransactionReceipt', [txHash])
-      }
-
-      showStatus('Deposit confirmed!')
-      setDepositAmount('')
-      updateBalance()
-      updateNotes()
+      await Promise.all([updateBalance(), updateNotes()])
+      showStatus('Deposit complete! 0.01 ETH added to your shielded balance.')
     } catch (e) {
+      setLoading(null)
       showStatus((e as Error).message, 'error')
     }
   }
@@ -191,6 +177,7 @@ function App() {
         throw new Error('Please enter a valid amount')
       }
 
+      setLoading('transfer')
       const weiAmount = '0x' + parseEther(transferAmount).toString(16)
       showStatus('Confirm transfer in MetaMask...', 'pending')
 
@@ -199,7 +186,7 @@ function App() {
         params: [{ from: account, to: transferTo, value: weiAmount }],
       }) as string
 
-      showStatus('Transfer submitted! Generating proof (this may take ~30 seconds)...', 'pending')
+      showStatus('Generating ZK proof (this takes ~30 seconds)...', 'pending')
 
       let receipt = null
       while (!receipt) {
@@ -207,12 +194,12 @@ function App() {
         receipt = await rpc('eth_getTransactionReceipt', [txHash])
       }
 
-      showStatus('Transfer complete! Proof verified on Sepolia.')
+      await Promise.all([updateBalance(), updateNotes()])
       setTransferTo('')
       setTransferAmount('')
-      updateBalance()
-      updateNotes()
+      showStatus('Transfer complete! Proof verified on Sepolia.')
     } catch (e) {
+      setLoading(null)
       showStatus((e as Error).message, 'error')
     }
   }
@@ -224,6 +211,7 @@ function App() {
         throw new Error('Please enter a valid amount')
       }
 
+      setLoading('withdraw')
       const weiAmount = '0x' + parseEther(withdrawAmount).toString(16)
       showStatus('Confirm withdrawal in MetaMask...', 'pending')
 
@@ -232,7 +220,7 @@ function App() {
         params: [{ from: account, to: WITHDRAW_SENTINEL, value: weiAmount }],
       }) as string
 
-      showStatus('Withdrawal submitted! Generating proof (this may take ~30 seconds)...', 'pending')
+      showStatus('Generating ZK proof (this takes ~30 seconds)...', 'pending')
 
       let receipt = null
       while (!receipt) {
@@ -240,11 +228,11 @@ function App() {
         receipt = await rpc('eth_getTransactionReceipt', [txHash])
       }
 
-      showStatus('Withdrawal complete! ETH sent to your wallet.')
+      await Promise.all([updateBalance(), updateNotes()])
       setWithdrawAmount('')
-      updateBalance()
-      updateNotes()
+      showStatus('Withdrawal complete! ETH sent to your wallet.')
     } catch (e) {
+      setLoading(null)
       showStatus((e as Error).message, 'error')
     }
   }
@@ -278,16 +266,18 @@ function App() {
             {!account ? (
               <button
                 onClick={connect}
-                className="w-full bg-cyan-500 hover:bg-cyan-400 text-slate-900 font-semibold py-3 px-6 rounded-lg transition"
+                disabled={!!loading}
+                className="w-full bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 font-semibold py-3 px-6 rounded-lg transition"
               >
                 Connect Wallet
               </button>
             ) : (
               <button
                 onClick={register}
-                className="w-full bg-slate-700 hover:bg-slate-600 text-cyan-400 font-semibold py-3 px-6 rounded-lg transition"
+                disabled={!!loading}
+                className="w-full bg-slate-700 hover:bg-slate-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-cyan-400 disabled:text-slate-500 font-semibold py-3 px-6 rounded-lg transition"
               >
-                Register Viewing Key
+                {loading === 'register' ? 'Registering...' : 'Register Viewing Key'}
               </button>
             )}
           </div>
@@ -296,22 +286,18 @@ function App() {
         {/* Actions (shown when registered) */}
         {registered && (
           <>
-            {/* Deposit */}
-            <div className="bg-slate-800 rounded-xl p-4 space-y-3">
-              <div className="text-cyan-400 font-semibold">Deposit</div>
-              <input
-                type="text"
-                placeholder="Amount in ETH (e.g., 0.01)"
-                value={depositAmount}
-                onChange={(e) => setDepositAmount(e.target.value)}
-                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500"
-              />
+            {/* Get Test ETH */}
+            <div className="bg-slate-800 rounded-xl p-4">
               <button
-                onClick={deposit}
-                className="w-full bg-cyan-500 hover:bg-cyan-400 text-slate-900 font-semibold py-3 px-6 rounded-lg transition"
+                onClick={getTestEth}
+                disabled={!!loading}
+                className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 disabled:text-slate-400 font-semibold py-3 px-6 rounded-lg transition"
               >
-                Deposit to Pool
+                {loading === 'deposit' ? 'Depositing...' : 'Get Test ETH (0.01 ETH)'}
               </button>
+              <p className="text-slate-500 text-xs mt-2 text-center">
+                Deposits 0.01 ETH from your wallet into the privacy pool
+              </p>
             </div>
 
             {/* Transfer */}
@@ -322,20 +308,23 @@ function App() {
                 placeholder="Recipient address (0x...)"
                 value={transferTo}
                 onChange={(e) => setTransferTo(e.target.value)}
-                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500"
+                disabled={!!loading}
+                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed"
               />
               <input
                 type="text"
                 placeholder="Amount in ETH"
                 value={transferAmount}
                 onChange={(e) => setTransferAmount(e.target.value)}
-                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500"
+                disabled={!!loading}
+                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed"
               />
               <button
                 onClick={transfer}
-                className="w-full bg-cyan-500 hover:bg-cyan-400 text-slate-900 font-semibold py-3 px-6 rounded-lg transition"
+                disabled={!!loading}
+                className="w-full bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 disabled:text-slate-400 font-semibold py-3 px-6 rounded-lg transition"
               >
-                Send Privately
+                {loading === 'transfer' ? 'Sending...' : 'Send Privately'}
               </button>
             </div>
 
@@ -347,13 +336,15 @@ function App() {
                 placeholder="Amount in ETH"
                 value={withdrawAmount}
                 onChange={(e) => setWithdrawAmount(e.target.value)}
-                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500"
+                disabled={!!loading}
+                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed"
               />
               <button
                 onClick={withdraw}
-                className="w-full bg-cyan-500 hover:bg-cyan-400 text-slate-900 font-semibold py-3 px-6 rounded-lg transition"
+                disabled={!!loading}
+                className="w-full bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 disabled:text-slate-400 font-semibold py-3 px-6 rounded-lg transition"
               >
-                Withdraw to Wallet
+                {loading === 'withdraw' ? 'Withdrawing...' : 'Withdraw to Wallet'}
               </button>
             </div>
 
@@ -384,7 +375,7 @@ function App() {
         {/* Status */}
         {status && (
           <div
-            className={`rounded-lg p-4 text-sm ${
+            className={`rounded-lg p-4 text-sm flex items-center gap-3 ${
               status.type === 'success'
                 ? 'bg-cyan-500/20 text-cyan-400'
                 : status.type === 'error'
@@ -392,6 +383,12 @@ function App() {
                 : 'bg-orange-500/20 text-orange-400'
             }`}
           >
+            {status.type === 'pending' && (
+              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+            )}
             {status.message}
           </div>
         )}
