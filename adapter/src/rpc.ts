@@ -12,6 +12,13 @@ import {
   WITHDRAW_SENTINEL,
   FIELD_SIZE,
 } from './config.js';
+
+// Fixed gas parameters - MUST match circuit constants
+// Circuit computes EIP-1559 signing hash with these exact values
+// If transaction uses different params, signature verification will fail
+const FIXED_MAX_PRIORITY_FEE = 1000000000n;  // 1 gwei
+const FIXED_MAX_FEE = 30000000000n;           // 30 gwei
+const FIXED_GAS_LIMIT = 21000n;               // simple transfer
 import { NoteStore, SessionKeys } from './notes.js';
 import { MerkleTree } from './merkle.js';
 
@@ -120,17 +127,27 @@ export class RpcAdapter {
       case 'eth_getTransactionCount':
         return this.getTransactionCount(params[0] as string);
 
-      // Gas estimation - return fixed value
+      // Gas estimation - return fixed value (must match circuit)
       case 'eth_estimateGas':
         return '0x5208'; // 21000 for simple transfer
 
-      // Fee methods - proxy to L1 for realistic values
+      // Fee methods - return FIXED values to match circuit expectations
+      // CRITICAL: Circuit computes signing hash with these exact gas params
+      // If MetaMask uses different values, signature verification will fail
       case 'eth_gasPrice':
+        return '0x6fc23ac00'; // 30 gwei (maxFeePerGas)
+
       case 'eth_maxPriorityFeePerGas':
-        return this.l1Client.request({ method: method as any, params: params as any });
+        return '0x3b9aca00'; // 1 gwei
 
       case 'eth_feeHistory':
-        return this.l1Client.request({ method: 'eth_feeHistory', params: params as any });
+        // Return fixed fee history that will make MetaMask use our fixed values
+        return {
+          oldestBlock: '0x1',
+          baseFeePerGas: ['0x6fc23ac00', '0x6fc23ac00'], // 30 gwei base fee
+          gasUsedRatio: [0.5],
+          reward: [['0x3b9aca00']], // 1 gwei priority fee
+        };
 
       // Transaction submission - intercept and process
       case 'eth_sendRawTransaction':
@@ -240,6 +257,24 @@ export class RpcAdapter {
     const value = parsed.value || 0n;
     if (value >= FIELD_SIZE) {
       throw new Error('Value exceeds field size');
+    }
+
+    // Validate gas parameters match circuit expectations
+    // CRITICAL: Circuit computes signing hash with fixed gas params
+    if (parsed.type === 'eip1559') {
+      const maxPriorityFee = parsed.maxPriorityFeePerGas || 0n;
+      const maxFee = parsed.maxFeePerGas || 0n;
+      const gasLimit = parsed.gas || 0n;
+
+      if (maxPriorityFee !== FIXED_MAX_PRIORITY_FEE) {
+        throw new Error(`Invalid maxPriorityFeePerGas. Expected ${FIXED_MAX_PRIORITY_FEE}, got ${maxPriorityFee}`);
+      }
+      if (maxFee !== FIXED_MAX_FEE) {
+        throw new Error(`Invalid maxFeePerGas. Expected ${FIXED_MAX_FEE}, got ${maxFee}`);
+      }
+      if (gasLimit !== FIXED_GAS_LIMIT) {
+        throw new Error(`Invalid gas limit. Expected ${FIXED_GAS_LIMIT}, got ${gasLimit}`);
+      }
     }
 
     // For now, return a mock transaction hash
