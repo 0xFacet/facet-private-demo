@@ -186,13 +186,9 @@ export class RpcAdapter {
       case 'eth_getTransactionCount':
         return this.getTransactionCount(params[0] as string);
 
-      // Gas estimation - return 1 to match circuit expectations
-      // The relayer pays actual L1 fees
       case 'eth_estimateGas':
-        return '0x1';
+        return "0x5208"
 
-      // Fee methods - return 1 to match circuit expectations
-      // Using 1 instead of 0 for simpler RLP encoding in circuits
       case 'eth_gasPrice':
         return '0x1';
 
@@ -483,6 +479,9 @@ export class RpcAdapter {
       intentNullifier,
       signatureData,
       txNonce: BigInt(txNonce),
+      txMaxPriorityFee: parsed.maxPriorityFeePerGas ?? 0n,
+      txMaxFee: parsed.maxFeePerGas ?? 0n,
+      txGasLimit: parsed.gas ?? 0n,
       txTo: BigInt(recipient),
       txValue: value,
       input0: {
@@ -634,6 +633,9 @@ export class RpcAdapter {
       withdrawAmount,
       signatureData,
       txNonce: BigInt(txNonce),
+      txMaxPriorityFee: parsed.maxPriorityFeePerGas ?? 0n,
+      txMaxFee: parsed.maxFeePerGas ?? 0n,
+      txGasLimit: parsed.gas ?? 0n,
       input0: {
         amount: note0.amount,
         randomness: note0.randomness,

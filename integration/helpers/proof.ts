@@ -54,6 +54,9 @@ export interface TransferCircuitInputs {
   // Private inputs
   signatureData: SignatureData;
   txNonce: bigint;
+  txMaxPriorityFee: bigint;
+  txMaxFee: bigint;
+  txGasLimit: bigint;
   txTo: bigint;
   txValue: bigint;
 
@@ -86,6 +89,9 @@ export interface WithdrawCircuitInputs {
   // Private inputs
   signatureData: SignatureData;
   txNonce: bigint;
+  txMaxPriorityFee: bigint;
+  txMaxFee: bigint;
+  txGasLimit: bigint;
 
   input0: NoteInput;
   input1: NoteInput;
@@ -153,6 +159,9 @@ export function buildTransferInputs(inputs: TransferCircuitInputs): Record<strin
 
     // Transaction fields
     tx_nonce: inputs.txNonce.toString(),
+    tx_max_priority_fee: inputs.txMaxPriorityFee.toString(),
+    tx_max_fee: inputs.txMaxFee.toString(),
+    tx_gas_limit: inputs.txGasLimit.toString(),
     tx_to: toNoirField(inputs.txTo),
     tx_value: inputs.txValue.toString(),
 
@@ -242,8 +251,11 @@ export function buildWithdrawInputs(inputs: WithdrawCircuitInputs): Record<strin
     pub_key_y: toNoirByteArray(inputs.signatureData.pubKeyY),
     signature: toNoirByteArray(inputs.signatureData.signature),
 
-    // Transaction nonce
+    // Transaction fields
     tx_nonce: inputs.txNonce.toString(),
+    tx_max_priority_fee: inputs.txMaxPriorityFee.toString(),
+    tx_max_fee: inputs.txMaxFee.toString(),
+    tx_gas_limit: inputs.txGasLimit.toString(),
 
     // Input note 0
     input_0_amount: inputs.input0.amount.toString(),

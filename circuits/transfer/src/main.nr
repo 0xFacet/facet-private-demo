@@ -21,12 +21,8 @@ global TREE_DEPTH: u32 = 20;
 // Virtual chain ID for replay protection (matches contract)
 global VIRTUAL_CHAIN_ID: Field = 13371337;
 
-// Fixed gas params for EIP-1559 tx (must match adapter)
-// Using 1 for all gas params - simpler RLP encoding than 0
+// Chain ID for EIP-1559 tx
 global CHAIN_ID: u64 = 13371337;
-global MAX_PRIORITY_FEE_PER_GAS: u64 = 1;
-global MAX_FEE_PER_GAS: u64 = 1;
-global GAS_LIMIT: u64 = 1;
 
 // Maximum RLP encoded length for EIP-1559 tx with our fixed params
 // chainId (5) + nonce (9) + maxPriorityFee (9) + maxFee (9) + gasLimit (5) + to (21) + value (9) + data (1) + accessList (1) + list overhead (3) = ~72
@@ -53,6 +49,9 @@ fn main(
     tx_nonce: u64,
     tx_to: Field,      // 20-byte recipient address as Field
     tx_value: u128,    // wei amount
+    tx_max_priority_fee: u64,
+    tx_max_fee: u64,
+    tx_gas_limit: u64,
 
     // Input note 0
     input_0_amount: u128,
@@ -82,7 +81,10 @@ fn main(
     // CRITICAL: This binds the ECDSA signature to the actual transaction fields
     // Without this, a malicious prover could substitute any valid signature
 
-    let signing_hash = compute_eip1559_signing_hash(tx_nonce, tx_to, tx_value);
+    let signing_hash = compute_eip1559_signing_hash(
+        tx_nonce, tx_to, tx_value,
+        tx_max_priority_fee, tx_max_fee, tx_gas_limit
+    );
 
     // ========================== 2. VERIFY ECDSA SIGNATURE ==========================
     // Signature must be over the EIP-1559 signing hash we just computed
@@ -177,12 +179,19 @@ fn main(
 
 // ========================== HELPER FUNCTIONS ==========================
 
-/// Compute EIP-1559 signing hash with fixed gas parameters
+/// Compute EIP-1559 signing hash with gas parameters
 /// signing_hash = keccak256(0x02 || rlp([chainId, nonce, maxPriorityFee, maxFee, gas, to, value, "", []]))
 ///
 /// IMPORTANT: All RLP encoding is inlined here to avoid Noir's pass-by-value semantics
 /// which would cause buffer modifications to be lost when using helper functions.
-fn compute_eip1559_signing_hash(nonce: u64, to: Field, value: u128) -> [u8; 32] {
+fn compute_eip1559_signing_hash(
+    nonce: u64,
+    to: Field,
+    value: u128,
+    max_priority_fee: u64,
+    max_fee: u64,
+    gas_limit: u64
+) -> [u8; 32] {
     // Validate 'to' address doesn't have high bits set (security fix for Field truncation)
     let to_bytes: [u8; 32] = to.to_be_bytes();
     for i in 0..12 {
@@ -231,17 +240,14 @@ fn compute_eip1559_signing_hash(nonce: u64, to: Field, value: u128) -> [u8; 32] 
         }
     }
 
-    // 3. maxPriorityFeePerGas = 1 (single byte, value < 128)
-    rlp_buffer[pos] = 0x01;
-    pos += 1;
+    // 3. maxPriorityFeePerGas (variable length)
+    pos = encode_u64_rlp(&mut rlp_buffer, pos, max_priority_fee);
 
-    // 4. maxFeePerGas = 1 (single byte, value < 128)
-    rlp_buffer[pos] = 0x01;
-    pos += 1;
+    // 4. maxFeePerGas (variable length)
+    pos = encode_u64_rlp(&mut rlp_buffer, pos, max_fee);
 
-    // 5. gasLimit = 1 (single byte, value < 128)
-    rlp_buffer[pos] = 0x01;
-    pos += 1;
+    // 5. gasLimit (variable length)
+    pos = encode_u64_rlp(&mut rlp_buffer, pos, gas_limit);
 
     // 6. to = 20-byte address, prefix 0x94
     rlp_buffer[pos] = 0x94; // 0x80 + 20
@@ -304,6 +310,36 @@ fn compute_eip1559_signing_hash(nonce: u64, to: Field, value: u128) -> [u8; 32] 
     // Hash: keccak256(0x02 || rlp_list)
     // Total length = 1 (type byte) + pos (RLP list including prefix)
     keccak256(to_hash, (pos + 1) as u32)
+}
+
+/// RLP encode a u64 value into buffer at position, return new position
+fn encode_u64_rlp(buffer: &mut [u8; MAX_RLP_LEN], pos: u32, value: u64) -> u32 {
+    let mut new_pos = pos;
+    if value == 0 {
+        buffer[new_pos] = 0x80;
+        new_pos += 1;
+    } else if value < 128 {
+        buffer[new_pos] = value as u8;
+        new_pos += 1;
+    } else {
+        let value_bytes = u64_to_be_bytes(value);
+        let mut value_start: u32 = 8;
+        for i in 0..8 {
+            if (value_bytes[i] != 0) & (value_start == 8) {
+                value_start = i as u32;
+            }
+        }
+        let value_len = 8 - value_start;
+        buffer[new_pos] = (0x80 + value_len) as u8;
+        new_pos += 1;
+        for i in 0..8 {
+            if i >= value_start {
+                buffer[new_pos] = value_bytes[i];
+                new_pos += 1;
+            }
+        }
+    }
+    new_pos
 }
 
 /// Convert u64 to big-endian bytes
@@ -400,11 +436,12 @@ fn compute_merkle_root(
 fn test_signing_hash_matches_viem_simple_transfer() {
     // From fixtures/eip1559-signed-txs.json "simple_transfer_1_eth"
     // Transfer 1 ETH from account_0 to account_1, nonce 0
+    // Gas params: maxPriorityFee=1gwei, maxFee=30gwei, gasLimit=21000
     let nonce: u64 = 0;
     let to: Field = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
     let value: u128 = 1000000000000000000; // 1 ETH in wei
 
-    let hash = compute_eip1559_signing_hash(nonce, to, value);
+    let hash = compute_eip1559_signing_hash(nonce, to, value, 1000000000, 30000000000, 21000);
 
     // Expected unsigned_hash from viem: 0x89ee7397becb63652bfaa3bd4b2fa067fc9758ec4b681504a6ef8d95828e2084
     let expected: [u8; 32] = [

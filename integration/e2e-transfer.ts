@@ -256,6 +256,9 @@ async function main() {
     // Private inputs
     signatureData,
     txNonce,
+    txMaxPriorityFee: FIXED_MAX_PRIORITY_FEE,
+    txMaxFee: FIXED_MAX_FEE,
+    txGasLimit: FIXED_GAS_LIMIT,
     txTo,
     txValue,
 
@@ -479,6 +482,9 @@ async function main() {
 
     signatureData: withdrawSignatureData,
     txNonce: withdrawNonce,
+    txMaxPriorityFee: FIXED_MAX_PRIORITY_FEE,
+    txMaxFee: FIXED_MAX_FEE,
+    txGasLimit: FIXED_GAS_LIMIT,
 
     input0: {
       amount: recipientNote.amount,
