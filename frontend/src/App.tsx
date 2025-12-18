@@ -519,7 +519,7 @@ function App() {
         {/* Header */}
         <div className="text-center mb-6">
           <h1 className="text-3xl font-bold text-cyan-400">Facet Private</h1>
-          <p className="text-slate-400 mt-1">Private ETH transactions with ZK proofs</p>
+          <p className="text-slate-400 mt-1">A rollup that turns MetaMask into a private bank account</p>
           {account && (
             <p className="text-slate-500 text-xs font-mono mt-2 break-all">{account}</p>
           )}
@@ -529,13 +529,21 @@ function App() {
         {(!account || !registered) && (
           <div className="bg-slate-800 rounded-xl p-4 space-y-3">
             {!account ? (
-              <button
-                onClick={connect}
-                disabled={!!loading}
-                className="w-full bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 font-semibold py-3 px-6 rounded-lg transition"
-              >
-                Connect Wallet
-              </button>
+              <>
+                <button
+                  onClick={connect}
+                  disabled={!!loading}
+                  className="w-full bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 font-semibold py-3 px-6 rounded-lg transition"
+                >
+                  Connect Wallet
+                </button>
+                <div className="text-left text-sm text-slate-400 space-y-2 pt-2">
+                  <p><strong className="text-slate-300">Your keys, your funds.</strong> Your MetaMask private key is your spending key. The adapter generates ZK proofs but cannot spend without your signature.</p>
+                  <p><strong className="text-slate-300">Deposits are public.</strong> When you deposit, observers see the amount. This is a tradeoff for simpler UX (no client-side proofs).</p>
+                  <p><strong className="text-slate-300">Spends are unlinkable.</strong> Transfers and withdrawals cannot be linked back to your deposits. That's the core privacy property.</p>
+                  <p><strong className="text-slate-300">This is a demo.</strong> It proves the core tech works. The full L2 will add private contract calls and rollup settlement.</p>
+                </div>
+              </>
             ) : (
               <>
                 <p className="text-slate-400 text-sm">
@@ -578,6 +586,7 @@ function App() {
               <div className="text-emerald-400 font-semibold">L1 Sepolia</div>
               <div className="text-emerald-400 font-bold">{l1Balance} ETH</div>
             </div>
+            <p className="text-slate-500 text-xs">Deposit ETH to get a private L2 balance. Deposits are visible; spends are not.</p>
             <div className="flex gap-2">
               <input
                 type="text"
@@ -605,7 +614,7 @@ function App() {
           <div className="bg-slate-800 rounded-xl p-4 space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <div className="text-cyan-400 font-semibold">L2 Facet Private</div>
+                <div className="text-cyan-400 font-semibold">L2 Private Balance</div>
                 <button
                   onClick={refreshAll}
                   disabled={!!loading}
@@ -623,6 +632,15 @@ function App() {
             {/* Transfer */}
             <div className="space-y-2">
               <div className="text-slate-400 text-sm">Private Transfer</div>
+              <p className="text-slate-500 text-xs">
+                Recipients must have registered with Facet Private.{' '}
+                <button
+                  onClick={() => setTransferTo('0xc2172a6315c1d7f6855768f843c420ebb36eda97')}
+                  className="text-cyan-500 hover:text-cyan-400 underline"
+                >
+                  Use sample address
+                </button>
+              </p>
               <input
                 type="text"
                 placeholder="Recipient (0x...)"
@@ -654,7 +672,10 @@ function App() {
 
             {/* Withdraw */}
             <div className="space-y-2 pt-2 border-t border-slate-700">
-              <div className="text-slate-400 text-sm">Withdraw to L1</div>
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400 text-sm">Withdraw to L1</span>
+                <span className="text-slate-600 text-xs">— exit to your public wallet</span>
+              </div>
               <div className="flex gap-2">
                 <input
                   type="text"
@@ -679,7 +700,10 @@ function App() {
             {/* Notes */}
             {unspentNotes.length > 0 && (
               <div className="pt-2 border-t border-slate-700">
-                <div className="text-slate-400 text-sm mb-2">Notes ({unspentNotes.length})</div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-slate-400 text-sm">Notes ({unspentNotes.length})</span>
+                  <span className="text-slate-600 text-xs">— encrypted UTXOs only you can spend</span>
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {unspentNotes.map((note) => (
                     <div key={note.commitment} className="bg-slate-700 rounded px-2 py-1 text-sm text-cyan-400">

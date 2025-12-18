@@ -1,306 +1,363 @@
 # Facet Private Demo
 
-Private ETH transactions with ZK proofs on Ethereum Sepolia.
+A standalone demo of the private payments layer for **Facet Private** — a rollup that turns MetaMask into a private bank account.
 
-## Quick Start: Running the MetaMask Demo
+## The Vision
 
-### 1. Start the Adapter
+**Facet Private** is an L2 where you use MetaMask normally, but your balances and transfers are private. No new wallet, no new keys.
 
-```bash
-cd adapter
-npm install
-npm run dev
+### Account Model
+
+| Type | Balance | Visibility |
+|------|---------|------------|
+| **EOAs** | Private only | Encrypted notes, visible only to owner |
+| **Contracts** | Public | Standard EVM, visible to everyone |
+
+EOAs hold zero public balance between transactions. When you call a contract, the system automatically unshields your funds, executes the call, and reshields any remainder — all in one transaction. The contract sees your EOA as the caller, just like normal Ethereum.
+
+### The Privacy Adapter
+
+A Privacy Adapter sits between MetaMask and the rollup:
+
+```
+MetaMask → Privacy Adapter → Rollup
 ```
 
-The adapter listens on `http://localhost:8546`.
+Three jobs:
+1. **Balances:** Decrypts your notes, reports them to MetaMask
+2. **Transfers:** You sign a normal send tx → Adapter builds ZK proof → amounts and parties stay hidden
+3. **Contract calls:** Adapter wraps call in unshield→execute→reshield (contract sees your EOA)
 
-### 2. Start the Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Open `http://localhost:5173` in your browser.
-
-### 3. Connect MetaMask
-
-1. Click "Connect Wallet" - the app will prompt you to add the network:
-   - **Network Name**: Facet Private (Demo)
-   - **RPC URL**: http://localhost:8546
-   - **Chain ID**: 13371337
-   - **Symbol**: ETH
-
-2. Click "Register Viewing Key" and sign the message
-
-### 4. Use the Demo
-
-**Important**: The circuit requires 2 input notes. Make at least **2 deposits** before transferring.
-
-1. **Deposit**: Enter amount (e.g., 0.01 ETH), click "Deposit to Pool"
-2. **Deposit again**: Make a second deposit
-3. **Transfer**: Enter recipient address and amount, click "Send Privately"
-4. **Withdraw**: Enter amount, click "Withdraw to Wallet"
-
-Proof generation takes ~30 seconds per operation.
-
-### Running E2E Tests
-
-```bash
-# Terminal 1: Start anvil
-anvil
-
-# Terminal 2: Run tests
-cd integration
-npm install
-npx tsx e2e-transfer.ts
-```
+Anyone can run their own Adapter.
 
 ---
 
-## Prerequisites
+## What This Demo Covers
 
-### Required Tools
+This demo proves the core innovation: **ECDSA signature verification inside ZK proofs**. Your MetaMask signature authorizes spends; the adapter cannot forge it.
 
-This project requires the following tools to be installed:
+| Feature | Full L2 | This Demo |
+|---------|---------|-----------|
+| Private EOA balances | ✅ | ✅ |
+| Private transfers | ✅ | ✅ |
+| Unlinkable spends | ✅ | ✅ |
+| Contract calls (unshield→execute→reshield) | ✅ | ❌ Not demoed |
+| Rollup settlement | ✅ | ❌ Uses L1 contract |
+
+The demo uses an L1 contract on Sepolia to simulate settlement. Think of it as a proof-of-concept for the hardest part: private transactions with a normal wallet UX.
+
+## Privacy Model
+
+| What | Visible on-chain? | Who can see it? |
+|------|-------------------|-----------------|
+| Deposit amount | Yes | Everyone |
+| Deposit recipient | Yes | Everyone |
+| Transfer amount | No | Only sender & recipient |
+| Transfer parties | No | Only sender & recipient |
+| Withdrawal amount | Yes | Everyone |
+| **Deposit → Spend link** | **No** | **Nobody** |
+
+The core privacy property: **observers cannot link your deposits to your transfers or withdrawals**. Even though deposits are public, the nullifier scheme makes spends unlinkable.
+
+This is a deliberate tradeoff. Full deposit privacy would require users to generate ZK proofs, which we avoid to keep the UX simple.
+
+## How It Works
+
+### Architecture (Demo)
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│    MetaMask     │────▶│     Adapter     │────▶│  Sepolia L1     │
+│  (User Wallet)  │     │  (L2 Simulator) │     │  (PrivacyPool)  │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+        │                       │                       │
+   Signs L2 txs            Generates ZK           Verifies proofs,
+   (chain 13371337)        proofs, settles        stores commitments
+                           to L1                  in merkle tree
+```
+
+In the full L2, the adapter's role would be handled by the sequencer, and settlement would happen via rollup proofs. For this demo, we simplify by posting proofs directly to an L1 contract.
+
+1. **Deposit:** User sends ETH to the PrivacyPool contract on Sepolia. A "note" commitment is added to the merkle tree.
+
+2. **Transfer:** User signs an L2 transaction in MetaMask. The adapter generates a ZK proof that the signature authorizes the spend, and settles to L1.
+
+3. **Withdraw:** Same as transfer, but user sends to the sentinel address `0x1`. ETH exits the pool to the user's L1 wallet.
+
+The L2 chain ID is **13371337**.
+
+### Trust Model
+
+| Component | Trusted for... | NOT trusted for... |
+|-----------|----------------|-------------------|
+| **Adapter** | Privacy (sees all your notes) | Spending (can't forge your signature) |
+| **L1 Contract** | Proof verification | Nothing else — trustless |
+| **MetaMask** | Key custody | N/A |
+
+The adapter is like a privacy-preserving RPC node. It can see your balance, but every spend requires your MetaMask signature verified inside the ZK circuit.
+
+---
+
+## User Guide
+
+### Prerequisites
+
+- MetaMask browser extension
+- Some Sepolia ETH ([faucet](https://sepoliafaucet.com))
+
+### Getting Started
+
+1. **Open the app** at `http://localhost:5173` (or deployed URL)
+
+2. **Connect Wallet** — Click the button and approve in MetaMask
+
+3. **Register Viewing Key** — Sign a message to derive your encryption keys. This is a one-time setup that lets the adapter decrypt notes sent to you.
+
+4. **Deposit** — Enter an amount and click "Deposit to L2". You'll sign a transaction on Sepolia that adds shielded ETH to your balance.
+
+5. **Transfer** — Enter a recipient address and amount, click "Send". The recipient must also be registered. You'll sign an L2 transaction; proof generation takes ~60 seconds.
+
+6. **Withdraw** — Enter an amount and click "Withdraw". Your shielded ETH returns to your L1 wallet.
+
+### Tips
+
+- Proof generation takes ~60 seconds on typical hardware
+- The adapter must be running for transfers/withdrawals to work
+- If the adapter restarts, click "Refresh Page" to re-register your session
+
+---
+
+## Developer Setup
+
+### Prerequisites
 
 #### 1. Foundry (Forge)
 
-Foundry is used for Solidity smart contract development and testing.
-
 ```bash
-# Install foundryup
 curl -L https://foundry.paradigm.xyz | bash
-
-# Install foundry
 foundryup
-```
-
-After installation, verify with:
-```bash
 forge --version
 ```
 
 #### 2. Noir (Nargo)
 
-Noir is the ZK circuit language used for the privacy proofs. Install version `1.0.0-beta.16` or compatible.
-
 ```bash
-# Install noirup
 curl -L https://raw.githubusercontent.com/noir-lang/noirup/refs/heads/main/install | bash
-
-# Install nargo (specific version)
 noirup -v 1.0.0-beta.16
-```
-
-After installation, verify with:
-```bash
 nargo --version
 ```
 
 #### 3. Barretenberg (bb)
 
-Barretenberg is the proving backend for Noir circuits. Use `bbup` to install it.
-
 ```bash
-# Install bbup
 curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/refs/heads/master/barretenberg/bbup/install | bash
-
-# Install bb (use nightly for latest features, or a specific version)
 bbup --nightly
-```
-
-After installation, verify with:
-```bash
 bb --version
 ```
 
-> **Note**: The `bb` version should be compatible with your `nargo` version. For nargo `1.0.0-beta.x`, use the nightly build or check the [Noir documentation](https://noir-lang.org/docs/getting_started/quick_start) for version compatibility.
-
 #### 4. Node.js
 
-Node.js is required for the adapter and frontend components.
-
 ```bash
-# Using nvm (recommended)
 nvm install 20
 nvm use 20
-
-# Or download from https://nodejs.org/
+node --version  # v20.x or later
 ```
 
-After installation, verify with:
-```bash
-node --version  # Should be v20.x or later
-```
-
-### Project Setup
-
-After installing the prerequisites:
+### Installation
 
 ```bash
-# Clone the repository
 git clone <repo-url>
 cd facet-private-demo
 
-# Install contract dependencies
-cd contracts
-forge install
-cd ..
+# Install all dependencies
+cd contracts && forge install && cd ..
+cd adapter && npm install && cd ..
+cd frontend && npm install && cd ..
+cd integration && npm install && cd ..
+```
 
-# Install fixture dependencies
-cd fixtures
-npm install
-cd ..
+### Running Locally
 
-# Install adapter dependencies
+**Terminal 1 — Adapter:**
+```bash
 cd adapter
-npm install
-cd ..
+cp .env.example .env  # Edit with your config
+npm run dev
+```
 
-# Install frontend dependencies
+**Terminal 2 — Frontend:**
+```bash
 cd frontend
-npm install
-cd ..
+npm run dev
+```
 
-# Install integration dependencies (for verifier generation)
-cd integration
-npm install
-cd ..
+Open `http://localhost:5173`
+
+### Environment Variables
+
+**Adapter (`adapter/.env`):**
+```bash
+PRIVACY_POOL_ADDRESS=0x...      # Deployed PrivacyPool address
+REGISTRY_ADDRESS=0x...          # Deployed RecipientRegistry address
+L1_RPC_URL=https://sepolia...   # Sepolia RPC endpoint
+RELAYER_PRIVATE_KEY=0x...       # Key for submitting L1 txs
+DEPLOY_BLOCK=12345678           # Block number of deployment (for faster sync)
+```
+
+**Frontend (`frontend/.env`):**
+```bash
+VITE_ADAPTER_URL=http://localhost:8546
+VITE_PRIVACY_POOL_ADDRESS=0x...
 ```
 
 ---
 
 ## Development
 
-### Rebuilding Circuits (Quick)
+### Rebuilding Circuits
 
-After modifying circuit code, run the rebuild script from the project root:
+After modifying circuit code:
 
 ```bash
 ./scripts/rebuild-circuits.sh
 ```
 
-This compiles both circuits, regenerates the Solidity verifiers, and rebuilds the contracts.
+This compiles both circuits, regenerates Solidity verifiers, and rebuilds contracts.
 
 ### Manual Steps
 
-If you prefer to run steps individually:
-
-#### Compiling Circuits
-
+**Compile circuits:**
 ```bash
-# Compile transfer circuit
-cd circuits/transfer
-nargo compile
-# Generates: circuits/transfer/target/transfer.json
-
-# Compile withdraw circuit
-cd ../withdraw
-nargo compile
-# Generates: circuits/withdraw/target/withdraw.json
+cd circuits/transfer && nargo compile
+cd ../withdraw && nargo compile
 ```
 
-These JSON files contain the compiled circuit bytecode used by both the verifier generator and the adapter's proof generation.
-
-#### Regenerating Verifier Contracts
-
-After compiling circuits, regenerate the Solidity verifiers:
-
+**Generate verifiers:**
 ```bash
-cd integration
-npx tsx generate-verifiers.ts
+cd integration && npx tsx generate-verifiers.ts
 ```
 
-This generates:
-- `contracts/verifiers/TransferVerifier.sol`
-- `contracts/verifiers/WithdrawVerifier.sol`
-
-Then rebuild the contracts:
-
+**Build contracts:**
 ```bash
-cd ../contracts
-forge build
+cd contracts && forge build
 ```
 
-### Running Contract Tests
+### Running Tests
 
+**Contract tests:**
+```bash
+cd contracts && forge test
+```
+
+**E2E tests (requires local anvil):**
+```bash
+# Terminal 1
+anvil
+
+# Terminal 2
+cd integration && npx tsx e2e-transfer.ts
+```
+
+### Deployment
+
+**Deploy to Sepolia:**
 ```bash
 cd contracts
-forge test
+PRIVATE_KEY=0x... forge script script/Deploy.s.sol --broadcast --rpc-url https://sepolia...
+```
+
+Note the deployed addresses and update your `.env` files.
+
+---
+
+## Technical Deep Dive
+
+### Note Structure
+
+A note commitment is: `poseidon(amount, owner, randomness, nullifierKeyHash)`
+
+- **amount** — ETH value in wei
+- **owner** — Ethereum address as field element
+- **randomness** — Random value for uniqueness
+- **nullifierKeyHash** — Hash of owner's nullifier key, binding note to their spending authority
+
+### Nullifier Scheme
+
+When spending a note, the circuit computes: `nullifier = poseidon(commitment, nullifierKey)`
+
+The `nullifierKey` is derived from the user's signature during registration and never revealed on-chain. Only its hash (`nullifierKeyHash`) is stored in the registry and embedded in commitments.
+
+This means:
+- Only the note owner can compute the nullifier (they have the key)
+- Observers see nullifiers but can't link them to deposits (they don't have the key)
+- Double-spend is prevented (same note → same nullifier → rejected)
+
+### Circuit Constraints
+
+The transfer circuit proves:
+1. Input notes exist in the merkle tree
+2. Nullifiers are correctly computed from notes + nullifier key
+3. ECDSA signature over the transaction is valid
+4. Signer owns the input notes
+5. Output commitments are correctly formed
+6. Value is conserved (inputs = outputs)
+7. Intent nullifier prevents replay
+
+### Why "No User Proofs"?
+
+Traditional privacy systems (Tornado Cash, Railgun) require users to generate ZK proofs client-side. This has UX costs:
+- Slow (minutes on mobile)
+- Requires WASM/native binaries
+- Complex key management
+
+Our approach: the adapter (or L2 sequencer in production) generates proofs server-side. Users just sign with MetaMask. The tradeoff is weaker deposit privacy, but the spend unlinkability — the core privacy property — is preserved.
+
+---
+
+## Project Structure
+
+```
+facet-private-demo/
+├── circuits/
+│   ├── transfer/        # Transfer circuit (Noir)
+│   └── withdraw/        # Withdraw circuit (Noir)
+├── contracts/
+│   ├── src/             # Solidity contracts
+│   ├── verifiers/       # Generated verifier contracts
+│   └── script/          # Deployment scripts
+├── adapter/             # Privacy RPC server
+├── frontend/            # React UI
+├── integration/         # E2E tests, verifier generation
+└── scripts/             # Build scripts
 ```
 
 ---
 
-## Introduction: Why This Architecture Exists
+## FAQ
 
-### The Problem with Private Transactions Today
+**Q: Is this a production system?**
+A: No. This is a demo that proves the core innovation works. The full Facet Private L2 is a larger effort that builds on these primitives.
 
-Every existing privacy solution on Ethereum—Tornado Cash, Railgun, Aztec—requires users to manage a separate set of cryptographic keys. You generate a "shielded wallet," back up a new seed phrase, and interact through custom interfaces. This isn't just inconvenient; it's a fundamental barrier to adoption. Users don't want another wallet. They want their existing wallet to just... work privately.
+**Q: Can the adapter steal my funds?**
+A: No. Every spend requires your ECDSA signature, verified inside the ZK circuit. The adapter can see your balance but cannot forge signatures.
 
-The mental model shift is significant: instead of "send 70 ETH to Bob," users have to think about "deposit to shielded pool, wait for anonymity set, generate proof with my shielded key, withdraw to fresh address." The privacy is real, but the UX is a research project.
+**Q: What if the adapter goes down?**
+A: Your funds are safe in the L1 contract. You'd need to run your own adapter (or wait for it to come back) to generate proofs for transfers/withdrawals.
 
-### The Core Insight
+**Q: Why are deposits public?**
+A: To avoid requiring users to generate proofs. Full deposit privacy would need a deposit circuit, adding UX complexity. This is a deliberate tradeoff for better UX.
 
-What if we could keep the spending authority exactly where it already is—in the user's Ethereum private key, secured by MetaMask—and move only the *visibility* into a separate layer?
+**Q: Can I run my own adapter?**
+A: Yes! The adapter is open source. Point it at your own Sepolia RPC and you're independent.
 
-That's what this system does. When you click "Send" in MetaMask, you're signing a real Ethereum transaction. That signature is your authorization to spend. The ZK circuit verifies that signature *inside the proof*, which means:
+**Q: How is this different from Tornado Cash?**
+A: Tornado uses fixed denominations and requires client-side proofs. We support variable amounts with server-side proofs and a MetaMask-native UX.
 
-1. **No new keys to manage.** Your ETH private key is your spending key.
-2. **No new interfaces to learn.** MetaMask's Send flow is the UX.
-3. **No trust in the adapter for spending.** The adapter can see your balance (it has your viewing key), but it literally cannot move your funds without your MetaMask signature.
+**Q: How does this relate to the full Facet Private L2?**
+A: This demo proves the core private payments mechanism. The full L2 adds contract calls with automatic unshield→execute→reshield, rollup settlement, and the full account model where EOAs have only private balances.
 
-The adapter is more like a privacy-preserving RPC node than a wallet. It watches the chain, decrypts your notes, and constructs proofs—but every spend requires you to sign with MetaMask.
+---
 
-### Why a Virtual Chain ID?
+## License
 
-There's an obvious attack if we're not careful: if the user signs a transaction targeting Sepolia (chainId 11155111), that transaction is valid on Sepolia. A malicious actor could intercept it and broadcast it, draining the user's *public* ETH to whatever address was in the `to` field.
-
-The fix is elegant: we present MetaMask with a fake chain ID (13371337) that doesn't correspond to any real network. The signed transaction is cryptographically valid, but useless on any actual blockchain. The adapter extracts the signature, verifies it inside the ZK circuit, and submits a *different* transaction (the proof) to Sepolia. The user's signature authorizes the private transfer; it never touches L1 directly.
-
-### What This Proves
-
-This demo is a standalone extraction of the private payments layer from a larger system—a privacy-oriented L2 rollup where all EOA balances are shielded by default. Building a full rollup is months of work. But the core innovation—ECDSA authorization inside ZK, preserving the MetaMask UX—can be demonstrated in a much smaller package.
-
-If this works, we've proven:
-
-1. **ECDSA-in-ZK is practical.** Yes, it's expensive (~400k constraints for secp256k1 + keccak), but modern provers handle it in reasonable time.
-
-2. **The UX can be seamless.** Users add a custom RPC, sign one setup message, and then just... use MetaMask normally. Send works. Balances update. No PhD required.
-
-3. **The trust model is sound.** The adapter is trusted with *privacy* (it sees everything), but not with *funds* (it can't forge your signature). This is a meaningful separation.
-
-### Relationship to the Full Rollup Vision
-
-In the complete system, this private payment mechanism would be one part of a larger privacy-preserving execution environment. The rollup would support general smart contract execution with shielded state, not just transfers. The "unshield → swap → reshield" flow would let users interact with DeFi without revealing their holdings.
-
-But payments are the foundation. If we can't do private sends cleanly, nothing else matters. This demo isolates that foundation and proves it works.
-
-### What the Developer Should Understand
-
-As you implement this, keep in mind:
-
-1. **The signed transaction is sacred.** Every constraint in the circuit exists to ensure that the user's MetaMask signature—and nothing else—authorizes the spend. The intent nullifier binds to (signer, chainId, nonce, to, value). The circuit verifies ECDSA. The adapter cannot substitute different parameters.
-
-2. **The adapter is powerful but not dangerous.** It holds the viewing key, so it sees all notes and can compute nullifiers. But the spending authority is the ECDSA signature, which only MetaMask can produce. This is the whole point: separate visibility from control.
-
-3. **The virtual chain ID is load-bearing.** If you accidentally use a real chain ID, signed transactions become weapons. The 13371337 ID isn't arbitrary—it's a security boundary.
-
-4. **Two input notes is a simplification.** Real systems support variable input counts with padding. We're requiring exactly two notes to keep the circuit simple and avoid edge cases around "dummy notes." This means users need at least two deposits before they can transfer, which is fine for a demo.
-
-5. **Events are your indexing strategy.** The `LeafInserted` event tells you where each commitment landed in the tree. Without it, you'd have to replay every transaction to reconstruct indices. Don't skip it.
-
-### The Goal
-
-When this is done, a user should be able to:
-
-1. Add "Facet Private" as a network in MetaMask
-2. Sign one message to derive their viewing key
-3. Register their encryption pubkey (one-time, on Sepolia)
-4. Deposit ETH through a simple web page
-5. Send ETH to any registered recipient using MetaMask's normal Send flow
-6. See their shielded balance update
-7. Withdraw back to their EOA when needed
-
-No new wallet. No seed phrases. No learning curve beyond "add network, sign message, deposit." That's the bar.
+MIT
