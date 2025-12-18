@@ -15,11 +15,20 @@ const __dirname = dirname(__filename);
 // Backend options - use keccak hash for Solidity verifier compatibility
 const BACKEND_OPTIONS = { keccak: true };
 
-// Circuit artifact paths - try repo root first (Heroku), then relative to dist (local)
+// Circuit artifact paths - try multiple locations
 function findCircuit(name: string): string {
-  const fromCwd = resolve(process.cwd(), `circuits/${name}/target/${name}.json`);
-  if (existsSync(fromCwd)) return fromCwd;
-  return resolve(__dirname, `../../circuits/${name}/target/${name}.json`);
+  const candidates = [
+    resolve(process.cwd(), `circuits/${name}/target/${name}.json`),
+    resolve(process.cwd(), `../circuits/${name}/target/${name}.json`),
+    resolve(__dirname, `../../circuits/${name}/target/${name}.json`),
+    resolve(__dirname, `../../../circuits/${name}/target/${name}.json`),
+  ];
+  console.log(`[Circuit] Looking for ${name}, cwd=${process.cwd()}, __dirname=${__dirname}`);
+  for (const path of candidates) {
+    console.log(`[Circuit] Checking ${path}: ${existsSync(path)}`);
+    if (existsSync(path)) return path;
+  }
+  throw new Error(`Circuit ${name} not found. Checked: ${candidates.join(', ')}`);
 }
 const TRANSFER_CIRCUIT_PATH = findCircuit('transfer');
 const WITHDRAW_CIRCUIT_PATH = findCircuit('withdraw');
