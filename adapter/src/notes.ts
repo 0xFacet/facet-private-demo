@@ -76,18 +76,28 @@ export class NoteStore {
 
   /**
    * Select notes for spending (simple greedy algorithm)
-   * Returns exactly 2 notes that cover the required amount
+   * Returns 1 or 2 notes that cover the required amount.
+   * Single-note case: caller should use phantom input for second note.
    */
   selectNotesForSpend(requiredAmount: bigint): Note[] | null {
     const unspent = this.getUnspentNotes().sort((a, b) =>
       a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : 0
     );
 
-    if (unspent.length < 2) {
-      return null; // Need at least 2 notes
+    if (unspent.length === 0) {
+      return null;
     }
 
-    // Try to find 2 notes that cover the amount
+    // Single note case: if 1 note covers amount, return it alone
+    // Caller will add phantom input for the second note
+    if (unspent.length === 1) {
+      if (unspent[0].amount >= requiredAmount) {
+        return [unspent[0]];
+      }
+      return null; // Single note doesn't cover amount
+    }
+
+    // Two+ notes: try to find 2 notes that cover the amount
     for (let i = 0; i < unspent.length; i++) {
       for (let j = i + 1; j < unspent.length; j++) {
         if (unspent[i].amount + unspent[j].amount >= requiredAmount) {
@@ -96,7 +106,12 @@ export class NoteStore {
       }
     }
 
-    return null; // Cannot cover amount with 2 notes
+    // If no pair covers it, try single note (largest might cover it alone)
+    if (unspent[0].amount >= requiredAmount) {
+      return [unspent[0]];
+    }
+
+    return null; // Cannot cover amount
   }
 
   /**

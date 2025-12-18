@@ -1,9 +1,30 @@
 import { useState, useEffect, useCallback } from 'react'
+import { encodeFunctionData, parseEther as viemParseEther, formatEther as viemFormatEther } from 'viem'
 
 // Configuration
 const ADAPTER_URL = 'http://localhost:8546'
 const WITHDRAW_SENTINEL = '0x0000000000000000000000000000000000000001'
+const SEPOLIA_CHAIN_ID = '0xaa36a7' // 11155111
 const VIRTUAL_CHAIN_ID = '0xcc07c9' // 13371337
+
+// Contract address - must match deployed contract
+const PRIVACY_POOL_ADDRESS = import.meta.env.VITE_PRIVACY_POOL_ADDRESS || '0x' // Set via env
+
+// BN254 field size for randomness
+const FIELD_SIZE = 21888242871839275222246405745257275088548364400416034343698204186575808495617n
+
+// Contract ABI for deposit
+const PRIVACY_POOL_ABI = [{
+  name: 'deposit',
+  type: 'function',
+  stateMutability: 'payable',
+  inputs: [
+    { name: 'noteOwner', type: 'uint256' },
+    { name: 'randomness', type: 'uint256' },
+    { name: 'encryptedNote', type: 'bytes' },
+  ],
+  outputs: [],
+}] as const
 
 interface Note {
   amount: string
@@ -21,7 +42,7 @@ declare global {
   }
 }
 
-// RPC helper
+// RPC helper for adapter
 async function rpc(method: string, params: unknown[] = []): Promise<unknown> {
   const res = await fetch(ADAPTER_URL, {
     method: 'POST',
@@ -35,11 +56,45 @@ async function rpc(method: string, params: unknown[] = []): Promise<unknown> {
 
 // Format helpers
 function parseEther(eth: string): bigint {
-  return BigInt(Math.floor(parseFloat(eth) * 1e18))
+  return viemParseEther(eth)
 }
 
 function formatEther(wei: bigint): string {
-  return (Number(wei) / 1e18).toFixed(4)
+  const full = viemFormatEther(wei)
+  const num = parseFloat(full)
+  return num.toLocaleString('en-US', { maximumFractionDigits: 4 })
+}
+
+// Generate random bigint for note randomness
+function randomBigInt(): bigint {
+  const bytes = crypto.getRandomValues(new Uint8Array(32))
+  let hex = '0x'
+  for (const b of bytes) hex += b.toString(16).padStart(2, '0')
+  return BigInt(hex) % FIELD_SIZE
+}
+
+// Switch to a specific network
+async function switchToNetwork(chainId: string, addIfMissing = false) {
+  try {
+    await window.ethereum!.request({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId }],
+    })
+  } catch (err: unknown) {
+    if ((err as { code: number }).code === 4902 && addIfMissing) {
+      await window.ethereum!.request({
+        method: 'wallet_addEthereumChain',
+        params: [{
+          chainId: VIRTUAL_CHAIN_ID,
+          chainName: 'Facet Private (L2)',
+          rpcUrls: [ADAPTER_URL],
+          nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+        }],
+      })
+    } else {
+      throw err
+    }
+  }
 }
 
 function App() {
@@ -49,9 +104,10 @@ function App() {
   const [l1Balance, setL1Balance] = useState<string>('--')
   const [notes, setNotes] = useState<Note[]>([])
   const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'pending' } | null>(null)
-  const [loading, setLoading] = useState<string | null>(null) // What operation is in progress
+  const [loading, setLoading] = useState<string | null>(null)
 
   // Form state
+  const [depositAmount, setDepositAmount] = useState('')
   const [transferTo, setTransferTo] = useState('')
   const [transferAmount, setTransferAmount] = useState('')
   const [withdrawAmount, setWithdrawAmount] = useState('')
@@ -71,8 +127,8 @@ function App() {
         rpc('eth_getBalance', [account, 'latest']) as Promise<string>,
         rpc('privacy_getL1Balance', [account]) as Promise<string>,
       ])
-      setBalance(formatEther(BigInt(shielded)) + ' ETH')
-      setL1Balance(formatEther(BigInt(l1)) + ' ETH')
+      setBalance(formatEther(BigInt(shielded)))
+      setL1Balance(formatEther(BigInt(l1)))
     } catch (e) {
       console.error('Balance error:', e)
     }
@@ -107,28 +163,6 @@ function App() {
       const addr = accounts[0]
       setAccount(addr)
 
-      // Try to switch to our network
-      try {
-        await window.ethereum.request({
-          method: 'wallet_switchEthereumChain',
-          params: [{ chainId: VIRTUAL_CHAIN_ID }],
-        })
-      } catch (switchError: unknown) {
-        if ((switchError as { code: number }).code === 4902) {
-          await window.ethereum.request({
-            method: 'wallet_addEthereumChain',
-            params: [{
-              chainId: VIRTUAL_CHAIN_ID,
-              chainName: 'Facet Private (Demo)',
-              rpcUrls: [ADAPTER_URL],
-              nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-            }],
-          })
-        } else {
-          throw switchError
-        }
-      }
-
       showStatus('Wallet connected! Please register your viewing key.')
     } catch (e) {
       showStatus((e as Error).message, 'error')
@@ -152,30 +186,80 @@ function App() {
 
       setRegistered(true)
       setLoading(null)
-      showStatus('Viewing key registered! You can now use private transactions.')
+      showStatus('Viewing key registered! You can now deposit ETH.')
     } catch (e) {
       setLoading(null)
       showStatus((e as Error).message, 'error')
     }
   }
 
-  // Get Test ETH (fixed 0.01 ETH deposit, relayer pays)
-  const getTestEth = async () => {
+  // L1 Deposit - user signs directly on Sepolia
+  const deposit = async () => {
     try {
-      setLoading('deposit')
-      showStatus('Depositing 0.01 ETH (creating 2 shielded notes)...', 'pending')
+      if (!depositAmount || parseFloat(depositAmount) <= 0) {
+        throw new Error('Please enter a valid amount')
+      }
+      if (!PRIVACY_POOL_ADDRESS || PRIVACY_POOL_ADDRESS === '0x') {
+        throw new Error('Privacy pool address not configured')
+      }
 
-      await rpc('privacy_getTestEth', [account])
+      setLoading('deposit')
+
+      // Ensure we're on Sepolia
+      showStatus('Switching to Sepolia...', 'pending')
+      await switchToNetwork(SEPOLIA_CHAIN_ID)
+
+      const amount = parseEther(depositAmount)
+      const owner = BigInt(account!)
+      const randomness = randomBigInt()
+
+      showStatus('Encrypting note data...', 'pending')
+
+      // Get encrypted note from adapter
+      const encryptedNote = await rpc('privacy_encryptNoteData', [
+        account,
+        {
+          owner: '0x' + owner.toString(16),
+          amount: '0x' + amount.toString(16),
+          randomness: '0x' + randomness.toString(16),
+        },
+      ]) as `0x${string}`
+
+      // Encode the deposit call
+      const data = encodeFunctionData({
+        abi: PRIVACY_POOL_ABI,
+        functionName: 'deposit',
+        args: [owner, randomness, encryptedNote],
+      })
+
+      showStatus('Confirm deposit in MetaMask...', 'pending')
+
+      // User signs tx directly on Sepolia
+      const txHash = await window.ethereum!.request({
+        method: 'eth_sendTransaction',
+        params: [{
+          from: account,
+          to: PRIVACY_POOL_ADDRESS,
+          value: '0x' + amount.toString(16),
+          data,
+        }],
+      }) as string
+
+      showStatus('Waiting for deposit confirmation...', 'pending')
+
+      // Tell adapter to watch for this deposit and sync
+      await rpc('privacy_watchForDeposit', [account, txHash])
 
       await Promise.all([updateBalance(), updateNotes()])
-      showStatus('Deposit complete! 0.01 ETH added to your shielded balance.')
+      setDepositAmount('')
+      showStatus('Deposit complete! Your shielded balance is updated.')
     } catch (e) {
       setLoading(null)
       showStatus((e as Error).message, 'error')
     }
   }
 
-  // Transfer
+  // Transfer (on L2)
   const transfer = async () => {
     try {
       if (!transferTo || !transferTo.startsWith('0x')) {
@@ -186,6 +270,18 @@ function App() {
       }
 
       setLoading('transfer')
+
+      // Check if recipient is registered before attempting transfer
+      showStatus('Checking recipient registration...', 'pending')
+      const recipientKey = await rpc('privacy_getEncryptionKey', [transferTo])
+      if (!recipientKey) {
+        throw new Error(`Recipient ${transferTo.slice(0, 10)}... is not registered. They must register a viewing key first.`)
+      }
+
+      // Ensure we're on virtual chain
+      showStatus('Switching to L2...', 'pending')
+      await switchToNetwork(VIRTUAL_CHAIN_ID, true)
+
       const weiAmount = '0x' + parseEther(transferAmount).toString(16)
       showStatus('Confirm transfer in MetaMask...', 'pending')
 
@@ -212,7 +308,7 @@ function App() {
     }
   }
 
-  // Withdraw
+  // Withdraw (on L2)
   const withdraw = async () => {
     try {
       if (!withdrawAmount || parseFloat(withdrawAmount) <= 0) {
@@ -220,6 +316,11 @@ function App() {
       }
 
       setLoading('withdraw')
+
+      // Ensure we're on virtual chain
+      showStatus('Switching to L2...', 'pending')
+      await switchToNetwork(VIRTUAL_CHAIN_ID, true)
+
       const weiAmount = '0x' + parseEther(withdrawAmount).toString(16)
       showStatus('Confirm withdrawal in MetaMask...', 'pending')
 
@@ -245,35 +346,18 @@ function App() {
     }
   }
 
+  const unspentNotes = notes.filter(n => !n.spent)
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-6">
-      <div className="max-w-md mx-auto space-y-6">
+      <div className="max-w-md mx-auto space-y-4">
         {/* Header */}
-        <div className="text-center">
-          <h1 className="text-3xl font-bold text-cyan-400">
-            Facet Private
-            <span className="ml-2 text-xs bg-orange-500/20 text-orange-400 px-2 py-1 rounded">
-              Sepolia
-            </span>
-          </h1>
+        <div className="text-center mb-6">
+          <h1 className="text-3xl font-bold text-cyan-400">Facet Private</h1>
           <p className="text-slate-400 mt-1">Private ETH transactions with ZK proofs</p>
-        </div>
-
-        {/* Balance Card */}
-        <div className="bg-slate-800 rounded-xl p-6">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <div className="text-slate-400 text-sm">Shielded Balance</div>
-              <div className="text-2xl font-bold text-cyan-400">{balance}</div>
-            </div>
-            <div>
-              <div className="text-slate-400 text-sm">Sepolia Balance</div>
-              <div className="text-2xl font-bold text-emerald-400">{l1Balance}</div>
-            </div>
-          </div>
-          <div className="text-slate-500 text-xs font-mono mt-3 break-all">
-            {account || 'Not connected'}
-          </div>
+          {account && (
+            <p className="text-slate-500 text-xs font-mono mt-2 break-all">{account}</p>
+          )}
         </div>
 
         {/* Connect / Register */}
@@ -299,90 +383,107 @@ function App() {
           </div>
         )}
 
-        {/* Actions (shown when registered) */}
+        {/* L1 Section */}
         {registered && (
-          <>
-            {/* Get Test ETH */}
-            <div className="bg-slate-800 rounded-xl p-4">
-              <button
-                onClick={getTestEth}
+          <div className="bg-slate-800 rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-emerald-400 font-semibold">L1 Sepolia</div>
+              <div className="text-emerald-400 font-bold">{l1Balance} ETH</div>
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Amount"
+                value={depositAmount}
+                onChange={(e) => setDepositAmount(e.target.value)}
                 disabled={!!loading}
-                className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 disabled:text-slate-400 font-semibold py-3 px-6 rounded-lg transition"
+                className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-emerald-500 disabled:opacity-50"
+              />
+              <button
+                onClick={deposit}
+                disabled={!!loading}
+                className="bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 disabled:text-slate-400 font-semibold py-2 px-4 rounded-lg transition whitespace-nowrap"
               >
-                {loading === 'deposit' ? 'Depositing...' : 'Get Test Shielded ETH (0.01 ETH)'}
+                {loading === 'deposit' ? '...' : 'Deposit →'}
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* L2 Section */}
+        {registered && (
+          <div className="bg-slate-800 rounded-xl p-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="text-cyan-400 font-semibold">L2 Shielded</div>
+              <div className="text-cyan-400 font-bold">{balance} ETH</div>
             </div>
 
             {/* Transfer */}
-            <div className="bg-slate-800 rounded-xl p-4 space-y-3">
-              <div className="text-cyan-400 font-semibold">Private Transfer</div>
+            <div className="space-y-2">
+              <div className="text-slate-400 text-sm">Private Transfer</div>
               <input
                 type="text"
-                placeholder="Recipient address (0x...)"
+                placeholder="Recipient (0x...)"
                 value={transferTo}
                 onChange={(e) => setTransferTo(e.target.value)}
                 disabled={!!loading}
-                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
               />
-              <input
-                type="text"
-                placeholder="Amount in ETH"
-                value={transferAmount}
-                onChange={(e) => setTransferAmount(e.target.value)}
-                disabled={!!loading}
-                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed"
-              />
-              <button
-                onClick={transfer}
-                disabled={!!loading}
-                className="w-full bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 disabled:text-slate-400 font-semibold py-3 px-6 rounded-lg transition"
-              >
-                {loading === 'transfer' ? 'Sending...' : 'Send Privately'}
-              </button>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Amount"
+                  value={transferAmount}
+                  onChange={(e) => setTransferAmount(e.target.value)}
+                  disabled={!!loading}
+                  className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
+                />
+                <button
+                  onClick={transfer}
+                  disabled={!!loading}
+                  className="bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 disabled:text-slate-400 font-semibold py-2 px-4 rounded-lg transition whitespace-nowrap"
+                >
+                  {loading === 'transfer' ? '...' : 'Send'}
+                </button>
+              </div>
             </div>
 
             {/* Withdraw */}
-            <div className="bg-slate-800 rounded-xl p-4 space-y-3">
-              <div className="text-cyan-400 font-semibold">Withdraw</div>
-              <input
-                type="text"
-                placeholder="Amount in ETH"
-                value={withdrawAmount}
-                onChange={(e) => setWithdrawAmount(e.target.value)}
-                disabled={!!loading}
-                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed"
-              />
-              <button
-                onClick={withdraw}
-                disabled={!!loading}
-                className="w-full bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 disabled:text-slate-400 font-semibold py-3 px-6 rounded-lg transition"
-              >
-                {loading === 'withdraw' ? 'Withdrawing...' : 'Withdraw to Wallet'}
-              </button>
+            <div className="space-y-2 pt-2 border-t border-slate-700">
+              <div className="text-slate-400 text-sm">Withdraw to L1</div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Amount"
+                  value={withdrawAmount}
+                  onChange={(e) => setWithdrawAmount(e.target.value)}
+                  disabled={!!loading}
+                  className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
+                />
+                <button
+                  onClick={withdraw}
+                  disabled={!!loading}
+                  className="bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 disabled:text-slate-400 font-semibold py-2 px-4 rounded-lg transition whitespace-nowrap"
+                >
+                  {loading === 'withdraw' ? '...' : 'Withdraw'}
+                </button>
+              </div>
             </div>
 
             {/* Notes */}
-            <div className="bg-slate-800 rounded-xl p-4 space-y-3">
-              <div className="text-cyan-400 font-semibold">Your Notes</div>
-              <div className="max-h-48 overflow-y-auto space-y-2">
-                {notes.length === 0 ? (
-                  <div className="text-slate-500 text-sm">No notes yet</div>
-                ) : (
-                  notes.map((note, i) => (
-                    <div
-                      key={i}
-                      className={`bg-slate-700 rounded-lg px-4 py-2 flex justify-between text-sm ${
-                        note.spent ? 'opacity-50' : ''
-                      }`}
-                    >
-                      <span>{formatEther(BigInt(note.amount))} ETH</span>
-                      <span className="text-slate-400">{note.spent ? 'spent' : 'unspent'}</span>
+            {unspentNotes.length > 0 && (
+              <div className="pt-2 border-t border-slate-700">
+                <div className="text-slate-400 text-sm mb-2">Notes ({unspentNotes.length})</div>
+                <div className="flex flex-wrap gap-2">
+                  {unspentNotes.map((note, i) => (
+                    <div key={i} className="bg-slate-700 rounded px-2 py-1 text-sm text-cyan-400">
+                      {formatEther(BigInt(note.amount))} ETH
                     </div>
-                  ))
-                )}
+                  ))}
+                </div>
               </div>
-            </div>
-          </>
+            )}
+          </div>
         )}
 
         {/* Status */}
@@ -397,7 +498,7 @@ function App() {
             }`}
           >
             {status.type === 'pending' && (
-              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+              <svg className="animate-spin h-4 w-4 flex-shrink-0" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
               </svg>

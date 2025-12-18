@@ -22,6 +22,7 @@ import {
   WITHDRAW_SENTINEL,
   FIELD_SIZE,
   CONTRACTS,
+  TREE_DEPTH,
 } from './config.js';
 import { NoteStore, SessionKeys, createNoteWithRandomness, type Note } from './notes.js';
 import { MerkleTree } from './merkle.js';
@@ -235,11 +236,17 @@ export class RpcAdapter {
       case 'privacy_getNotes':
         return this.getNotes(params[0] as string);
 
-      case 'privacy_getTestEth':
-        return this.getTestEth(params[0] as string);
-
       case 'privacy_getL1Balance':
         return this.getL1Balance(params[0] as string);
+
+      case 'privacy_encryptNoteData':
+        return this.encryptNoteDataForUser(params[0] as string, params[1] as { owner: string; amount: string; randomness: string });
+
+      case 'privacy_watchForDeposit':
+        return this.watchForDeposit(params[0] as string, params[1] as string);
+
+      case 'privacy_getEncryptionKey':
+        return this.getEncryptionKey(params[0] as string);
 
       default:
         throw new Error(`Method ${method} not supported`);
@@ -369,8 +376,8 @@ export class RpcAdapter {
     const poolAddress = CONTRACTS.privacyPool.toLowerCase();
 
     if (to === poolAddress) {
-      // Direct deposits not supported - use privacy_getTestEth RPC instead
-      throw new Error('Direct deposits not supported. Use "Get Test ETH" button instead.');
+      // Direct deposits must be made on L1 (Sepolia), not through the virtual chain
+      throw new Error('Deposits must be made on L1 Sepolia. Switch to L1 tab to deposit.');
     } else if (to === WITHDRAW_SENTINEL.toLowerCase()) {
       // Withdrawal
       return this.executeWithdraw(parsed, session, senderAddress as Hex, signedTx as Hex, recoveredPubKey);
@@ -398,17 +405,18 @@ export class RpcAdapter {
 
     console.log(`[Transfer] ${senderAddress} -> ${recipient}, value=${value}`);
 
-    // Circuit requires exactly 2 notes with valid merkle proofs
+    // Select notes - can return 1 or 2 notes
     const selectedNotes = session.noteStore.selectNotesForSpend(value);
     if (!selectedNotes) {
       const unspent = session.noteStore.getUnspentNotes();
-      if (unspent.length < 2) {
-        throw new Error(`Need at least 2 deposits before transferring. You have ${unspent.length} note(s).`);
-      }
       const total = unspent.reduce((sum, n) => sum + n.amount, 0n);
       throw new Error(`Insufficient balance. Have ${total}, need ${value}`);
     }
 
+    // Route to single-note or two-note execution
+    if (selectedNotes.length === 1) {
+      return this.executeTransferSingleNote(parsed, session, senderAddress, signedTx, selectedNotes[0], recoveredPubKey);
+    }
     return this.executeTransferTwoNotes(parsed, session, senderAddress, signedTx, selectedNotes, recoveredPubKey);
   }
 
@@ -554,6 +562,149 @@ export class RpcAdapter {
     return virtualHash;
   }
 
+  private async executeTransferSingleNote(
+    parsed: ReturnType<typeof parseTransaction>,
+    session: UserSession,
+    senderAddress: Hex,
+    signedTx: Hex,
+    note: Note,
+    recoveredPubKey: Hex
+  ): Promise<string> {
+    const value = parsed.value || 0n;
+    const recipient = parsed.to as Hex;
+    const txNonce = parsed.nonce ?? 0;
+
+    console.log('[Transfer] Using single-note with phantom input');
+
+    // Look up recipient's encryption public key from Registry
+    const recipientPkBytes32 = await getEncryptionKey(recipient);
+    if (!recipientPkBytes32) {
+      throw new Error(`Recipient ${recipient} is not registered. They must register a viewing key first.`);
+    }
+    const recipientPubKey = hexToPubKey(recipientPkBytes32);
+
+    const change = note.amount - value;
+
+    // Real note (input 0)
+    const proof0 = this.merkleTree.generateProof(note.leafIndex);
+    const nullifier0 = computeNullifier(note.commitment, note.randomness);
+
+    // Phantom note (input 1) - amount=0 skips merkle verification in circuit
+    // Derive unique randomness from signed tx to prevent nullifier collision
+    const phantomRandomness = BigInt(keccak256(concat([signedTx, '0xff']))) % FIELD_SIZE;
+    const phantomCommitment = computeCommitment(0n, BigInt(senderAddress), phantomRandomness);
+    const nullifier1 = computeNullifier(phantomCommitment, phantomRandomness);
+
+    // Output 0: to recipient
+    const output0Owner = BigInt(recipient);
+    const output0Randomness = BigInt(keccak256(concat([signedTx, '0x00']))) % FIELD_SIZE;
+    const output0Commitment = computeCommitment(value, output0Owner, output0Randomness);
+
+    // Output 1: change back to sender
+    const output1Owner = BigInt(senderAddress);
+    const output1Randomness = BigInt(keccak256(concat([signedTx, '0x01']))) % FIELD_SIZE;
+    const output1Commitment = computeCommitment(change, output1Owner, output1Randomness);
+
+    // Intent nullifier
+    const intentNullifier = computeIntentNullifier(
+      BigInt(senderAddress),
+      VIRTUAL_CHAIN_ID,
+      BigInt(txNonce),
+      BigInt(recipient),
+      value
+    );
+
+    // Extract signature data
+    const signatureData = extractSignatureFromTx(
+      parsed.r!,
+      parsed.s!,
+      recoveredPubKey
+    );
+
+    // Build circuit inputs
+    const merkleRoot = this.merkleTree.getRoot();
+    const circuitInputs: TransferCircuitInputs = {
+      merkleRoot,
+      nullifier0,
+      nullifier1,
+      outputCommitment0: output0Commitment,
+      outputCommitment1: output1Commitment,
+      intentNullifier,
+      signatureData,
+      txNonce: BigInt(txNonce),
+      txMaxPriorityFee: parsed.maxPriorityFeePerGas ?? 0n,
+      txMaxFee: parsed.maxFeePerGas ?? 0n,
+      txGasLimit: parsed.gas ?? 0n,
+      txTo: BigInt(recipient),
+      txValue: value,
+      input0: {
+        amount: note.amount,
+        randomness: note.randomness,
+        leafIndex: note.leafIndex,
+        siblings: proof0.siblings,
+      },
+      input1: {
+        // Phantom input - amount=0 triggers circuit to skip merkle verification
+        amount: 0n,
+        randomness: phantomRandomness,
+        leafIndex: 0,
+        siblings: Array(TREE_DEPTH).fill(0n),
+      },
+      output0Amount: value,
+      output0Owner,
+      output0Randomness,
+      output1Amount: change,
+      output1Randomness,
+    };
+
+    console.log('[Transfer] Generating proof (single-note)...');
+    const { proof } = await generateTransferProof(circuitInputs);
+
+    // Encrypt note data for recipient and sender
+    const encryptedNote0 = await encryptNoteData(recipientPubKey, {
+      owner: output0Owner,
+      amount: value,
+      randomness: output0Randomness,
+    });
+    const encryptedNote1 = await encryptNoteData(session.keys.encryptionPubKey, {
+      owner: output1Owner,
+      amount: change,
+      randomness: output1Randomness,
+    });
+
+    // Submit to L1
+    const l1Hash = await submitTransfer(
+      proof,
+      merkleRoot,
+      [nullifier0, nullifier1],
+      [output0Commitment, output1Commitment],
+      intentNullifier,
+      [encryptedNote0, encryptedNote1]
+    );
+    const receipt = await waitForReceipt(l1Hash);
+    const [leafIndex0, leafIndex1] = parseTransferLeafIndices(receipt);
+
+    // Sync merkle tree
+    await syncFromChain(this.merkleTree, this.spentNullifiers, this.usedIntents);
+
+    // Update user's note store
+    session.noteStore.markSpent(note.commitment);
+
+    // Add change note back to sender's store
+    if (change > 0n) {
+      const changeNote = createNoteWithRandomness(change, output1Owner, output1Randomness, leafIndex1);
+      session.noteStore.addNote(changeNote);
+    }
+
+    session.virtualNonce += 1n;
+
+    const virtualHash = keccak256(signedTx);
+    this.txHashMapping.set(virtualHash, l1Hash);
+
+    console.log(`[Transfer] Complete (single-note)! l1Hash=${l1Hash}`);
+    return virtualHash;
+  }
+
   // ==================== Withdraw ====================
 
   private async executeWithdraw(
@@ -576,15 +727,20 @@ export class RpcAdapter {
 
     console.log(`[Withdraw] ${senderAddress} withdrawing ${withdrawAmount} to ${withdrawRecipient}`);
 
-    // Circuit requires exactly 2 notes with valid merkle proofs
+    // Select notes - can return 1 or 2 notes
     const selectedNotes = session.noteStore.selectNotesForSpend(withdrawAmount);
     if (!selectedNotes) {
       const unspent = session.noteStore.getUnspentNotes();
-      if (unspent.length < 2) {
-        throw new Error(`Need at least 2 deposits before withdrawing. You have ${unspent.length} note(s).`);
-      }
       const total = unspent.reduce((sum, n) => sum + n.amount, 0n);
       throw new Error(`Insufficient balance. Have ${total}, need ${withdrawAmount}`);
+    }
+
+    // Route to single-note or two-note execution
+    if (selectedNotes.length === 1) {
+      return this.executeWithdrawSingleNote(
+        parsed, session, senderAddress, signedTx, selectedNotes[0],
+        recoveredPubKey, withdrawAmount, withdrawRecipient
+      );
     }
 
     const [note0, note1] = selectedNotes;
@@ -697,6 +853,127 @@ export class RpcAdapter {
     return virtualHash;
   }
 
+  private async executeWithdrawSingleNote(
+    parsed: ReturnType<typeof parseTransaction>,
+    session: UserSession,
+    senderAddress: Hex,
+    signedTx: Hex,
+    note: Note,
+    recoveredPubKey: Hex,
+    withdrawAmount: bigint,
+    withdrawRecipient: Hex
+  ): Promise<string> {
+    console.log('[Withdraw] Using single-note with phantom input');
+
+    const changeAmount = note.amount - withdrawAmount;
+    const txNonce = parsed.nonce ?? 0;
+
+    // Real note (input 0)
+    const proof0 = this.merkleTree.generateProof(note.leafIndex);
+    const nullifier0 = computeNullifier(note.commitment, note.randomness);
+
+    // Phantom note (input 1) - amount=0 skips merkle verification in circuit
+    const phantomRandomness = BigInt(keccak256(concat([signedTx, '0xff']))) % FIELD_SIZE;
+    const phantomCommitment = computeCommitment(0n, BigInt(senderAddress), phantomRandomness);
+    const nullifier1 = computeNullifier(phantomCommitment, phantomRandomness);
+
+    // Change commitment
+    const changeOwner = BigInt(senderAddress);
+    const changeRandomness = BigInt(keccak256(concat([signedTx, '0x02']))) % FIELD_SIZE;
+    const changeCommitment =
+      changeAmount > 0n ? computeCommitment(changeAmount, changeOwner, changeRandomness) : 0n;
+
+    // Intent nullifier
+    const intentNullifier = computeWithdrawIntentNullifier(
+      BigInt(senderAddress),
+      VIRTUAL_CHAIN_ID,
+      BigInt(txNonce),
+      withdrawAmount
+    );
+
+    const signatureData = extractSignatureFromTx(
+      parsed.r!,
+      parsed.s!,
+      recoveredPubKey
+    );
+
+    const merkleRoot = this.merkleTree.getRoot();
+
+    const circuitInputs: WithdrawCircuitInputs = {
+      merkleRoot,
+      nullifier0,
+      nullifier1,
+      changeCommitment,
+      intentNullifier,
+      withdrawRecipient: BigInt(withdrawRecipient),
+      withdrawAmount,
+      signatureData,
+      txNonce: BigInt(txNonce),
+      txMaxPriorityFee: parsed.maxPriorityFeePerGas ?? 0n,
+      txMaxFee: parsed.maxFeePerGas ?? 0n,
+      txGasLimit: parsed.gas ?? 0n,
+      input0: {
+        amount: note.amount,
+        randomness: note.randomness,
+        leafIndex: note.leafIndex,
+        siblings: proof0.siblings,
+      },
+      input1: {
+        // Phantom input - amount=0 triggers circuit to skip merkle verification
+        amount: 0n,
+        randomness: phantomRandomness,
+        leafIndex: 0,
+        siblings: Array(TREE_DEPTH).fill(0n),
+      },
+      changeAmount,
+      changeRandomness,
+    };
+
+    console.log('[Withdraw] Generating proof (single-note)...');
+    const { proof } = await generateWithdrawProof(circuitInputs);
+
+    // Encrypt change note for recovery on session restart
+    const encryptedChange = changeAmount > 0n
+      ? await encryptNoteData(session.keys.encryptionPubKey, {
+          owner: changeOwner,
+          amount: changeAmount,
+          randomness: changeRandomness,
+        })
+      : '0x' as Hex;
+
+    const l1Hash = await submitWithdraw(
+      proof,
+      merkleRoot,
+      [nullifier0, nullifier1],
+      changeCommitment,
+      intentNullifier,
+      withdrawRecipient,
+      withdrawAmount,
+      encryptedChange
+    );
+    const receipt = await waitForReceipt(l1Hash);
+    const leafIndex = changeCommitment !== 0n ? parseWithdrawLeafIndex(receipt) : 0;
+
+    // Sync merkle tree
+    await syncFromChain(this.merkleTree, this.spentNullifiers, this.usedIntents);
+
+    // Update user's note store
+    session.noteStore.markSpent(note.commitment);
+
+    if (changeCommitment !== 0n) {
+      const changeNote = createNoteWithRandomness(changeAmount, changeOwner, changeRandomness, leafIndex);
+      session.noteStore.addNote(changeNote);
+    }
+
+    session.virtualNonce += 1n;
+
+    const virtualHash = keccak256(signedTx);
+    this.txHashMapping.set(virtualHash, l1Hash);
+
+    console.log(`[Withdraw] Complete (single-note)! l1Hash=${l1Hash}`);
+    return virtualHash;
+  }
+
   // ==================== Receipt Methods ====================
 
   private async getTransactionReceipt(txHash: string): Promise<unknown> {
@@ -767,69 +1044,6 @@ export class RpcAdapter {
   }
 
   // ==================== Custom Methods ====================
-
-  private async getTestEth(address: string): Promise<boolean> {
-    const normalizedAddress = address.toLowerCase();
-    const session = this.sessions.get(normalizedAddress);
-    if (!session) {
-      throw new Error('Session not found. Register viewing key first.');
-    }
-
-    const amount = 10000000000000000n; // 0.01 ETH
-    console.log(`[GetTestEth] ${address} getting 0.01 ETH (split into 2 notes)`);
-
-    // Split deposit into 2 notes so user can immediately transfer/withdraw
-    const amount1 = amount / 2n;
-    const amount2 = amount - amount1;
-
-    const owner = BigInt(normalizedAddress);
-
-    // Generate random values for both notes
-    const randomBytes1 = crypto.getRandomValues(new Uint8Array(32));
-    const randomness1 = BigInt('0x' + Array.from(randomBytes1).map(b => b.toString(16).padStart(2, '0')).join('')) % FIELD_SIZE;
-
-    const randomBytes2 = crypto.getRandomValues(new Uint8Array(32));
-    const randomness2 = BigInt('0x' + Array.from(randomBytes2).map(b => b.toString(16).padStart(2, '0')).join('')) % FIELD_SIZE;
-
-    // Note: commitment is now computed on-chain from (msg.value, owner, randomness)
-    // We still compute it locally to store the note, but don't pass it to the contract
-
-    // Encrypt note data with user's public key (ECIES)
-    const encryptedNote1 = await encryptNoteData(session.keys.encryptionPubKey, {
-      owner,
-      amount: amount1,
-      randomness: randomness1,
-    });
-    const encryptedNote2 = await encryptNoteData(session.keys.encryptionPubKey, {
-      owner,
-      amount: amount2,
-      randomness: randomness2,
-    });
-
-    console.log(`[GetTestEth] Submitting 2 L1 deposits: ${amount1} + ${amount2} wei`);
-
-    // New deposit signature: (owner, randomness, amount, encryptedNote)
-    // Contract computes commitment on-chain to prevent fake-amount attacks
-    const l1Hash1 = await submitDeposit(owner, randomness1, amount1, encryptedNote1);
-    const receipt1 = await waitForReceipt(l1Hash1);
-    const leafIndex1 = parseDepositLeafIndex(receipt1);
-
-    const l1Hash2 = await submitDeposit(owner, randomness2, amount2, encryptedNote2);
-    const receipt2 = await waitForReceipt(l1Hash2);
-    const leafIndex2 = parseDepositLeafIndex(receipt2);
-
-    // Sync merkle tree from chain to ensure consistency
-    await syncFromChain(this.merkleTree, this.spentNullifiers, this.usedIntents);
-
-    // Add notes to user's store (createNoteWithRandomness computes commitment internally)
-    const note1 = createNoteWithRandomness(amount1, owner, randomness1, leafIndex1);
-    session.noteStore.addNote(note1);
-    const note2 = createNoteWithRandomness(amount2, owner, randomness2, leafIndex2);
-    session.noteStore.addNote(note2);
-
-    console.log(`[GetTestEth] Complete! leafIndices=${leafIndex1},${leafIndex2}`);
-    return true;
-  }
 
   private async registerViewingKey(address: string, signature: string): Promise<boolean> {
     const normalizedAddress = address.toLowerCase();
@@ -955,6 +1169,100 @@ export class RpcAdapter {
     });
 
     console.log(`[RegisterViewingKey] ${normalizedAddress}, recovered ${recoveredCount} notes`);
+    return true;
+  }
+
+  // ==================== L1 Deposit Support ====================
+
+  /**
+   * Encrypt note data for a user (for L1 deposits)
+   * Used by frontend to encrypt note data before submitting deposit tx
+   */
+  private async encryptNoteDataForUser(
+    address: string,
+    noteData: { owner: string; amount: string; randomness: string }
+  ): Promise<Hex> {
+    const normalizedAddress = address.toLowerCase();
+    const session = this.sessions.get(normalizedAddress);
+    if (!session) {
+      throw new Error('Session not found. Register viewing key first.');
+    }
+
+    const owner = BigInt(noteData.owner);
+    const amount = BigInt(noteData.amount);
+    const randomness = BigInt(noteData.randomness);
+
+    const encrypted = await encryptNoteData(session.keys.encryptionPubKey, {
+      owner,
+      amount,
+      randomness,
+    });
+
+    return encrypted;
+  }
+
+  /**
+   * Get user's encryption public key (for deposits)
+   */
+  private async getEncryptionKey(address: string): Promise<Hex | null> {
+    const normalizedAddress = address.toLowerCase();
+    const session = this.sessions.get(normalizedAddress);
+    if (session) {
+      // Return from session if available
+      return pubKeyToHex(session.keys.encryptionPubKey);
+    }
+
+    // Otherwise try to get from registry
+    return getEncryptionKey(normalizedAddress as Hex);
+  }
+
+  /**
+   * Watch for a deposit transaction and sync notes
+   * Called after user submits deposit tx on L1
+   */
+  private async watchForDeposit(address: string, txHash: string): Promise<boolean> {
+    const normalizedAddress = address.toLowerCase();
+    console.log(`[WatchForDeposit] ${normalizedAddress} watching for tx ${txHash}`);
+
+    // Wait for receipt
+    const receipt = await waitForReceipt(txHash as Hex);
+    console.log(`[WatchForDeposit] Deposit confirmed in block ${receipt.blockNumber}`);
+
+    // Sync merkle tree from chain to include new deposit
+    await syncFromChain(this.merkleTree, this.spentNullifiers, this.usedIntents);
+
+    // If user has a session, recover their notes
+    const session = this.sessions.get(normalizedAddress);
+    if (session && session.keys.encryptionPrivKey) {
+      // Re-scan deposit events to pick up the new note
+      const { getDepositEvents } = await import('./sync.js');
+      const deposits = await getDepositEvents();
+      const encryptionPrivKey = session.keys.encryptionPrivKey;
+      const userOwner = BigInt(normalizedAddress);
+
+      for (const dep of deposits) {
+        if (dep.encryptedNote && dep.encryptedNote.length > 2) {
+          const noteData = decryptNoteData(encryptionPrivKey, dep.encryptedNote);
+          if (noteData && noteData.owner === userOwner) {
+            const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
+            if (expectedCommitment === dep.commitment) {
+              // Check if we already have this note
+              const existingNotes = session.noteStore.getAllNotes();
+              const alreadyHave = existingNotes.some(n => n.commitment === dep.commitment);
+              if (!alreadyHave) {
+                const nullifier = computeNullifier(dep.commitment, noteData.randomness);
+                if (!this.spentNullifiers.has(nullifier)) {
+                  const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, dep.leafIndex);
+                  session.noteStore.addNote(note);
+                  console.log(`[WatchForDeposit] Added note: ${noteData.amount} wei`);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     return true;
   }
 
