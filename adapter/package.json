@@ -11,6 +11,7 @@
   "dependencies": {
     "@aztec/bb.js": "3.0.0-nightly.20251104",
     "@fastify/cors": "^10.0.0",
+    "@fastify/static": "^8.3.0",
     "@noble/hashes": "^2.0.1",
     "@noble/secp256k1": "^3.0.0",
     "@noir-lang/noir_js": "1.0.0-beta.16",

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { encodeFunctionData, parseEther as viemParseEther, formatEther as viemFormatEther } from 'viem'
 
 // Configuration
-const ADAPTER_URL = 'http://localhost:8546'
+const ADAPTER_URL = import.meta.env.VITE_ADAPTER_URL || 'http://localhost:8546'
 const WITHDRAW_SENTINEL = '0x0000000000000000000000000000000000000001'
 const SEPOLIA_CHAIN_ID = '0xaa36a7' // 11155111
 const VIRTUAL_CHAIN_ID = '0xcc07c9' // 13371337
