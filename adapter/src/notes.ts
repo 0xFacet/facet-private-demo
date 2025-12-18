@@ -157,24 +157,6 @@ export function createNoteWithRandomness(
 }
 
 /**
- * Encrypt a note for a recipient using their public key
- * Simple XOR-based encryption for demo (use ECIES in production)
- */
-export function encryptNote(note: Note, recipientPubKey: Uint8Array): Uint8Array {
-  // Encode note data: amount (32 bytes) + randomness (32 bytes)
-  const data = new Uint8Array(64);
-  const amountBytes = bigIntToBytes(note.amount, 32);
-  const randomnessBytes = bigIntToBytes(note.randomness, 32);
-
-  data.set(amountBytes, 0);
-  data.set(randomnessBytes, 32);
-
-  // In production, use ECIES. For demo, just return raw data
-  // TODO: Implement proper ECIES encryption
-  return data;
-}
-
-/**
  * Try to decrypt a note using session keys
  * Returns null if decryption fails or note doesn't belong to us
  */

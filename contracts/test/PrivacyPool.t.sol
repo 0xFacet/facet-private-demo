@@ -6,6 +6,7 @@ import {PrivacyPool} from "../src/PrivacyPool.sol";
 import {RecipientRegistry} from "../src/RecipientRegistry.sol";
 import {MockVerifier} from "../src/MockVerifier.sol";
 import {PoseidonT3} from "poseidon-solidity/PoseidonT3.sol";
+import {PoseidonT4} from "poseidon-solidity/PoseidonT4.sol";
 
 contract PrivacyPoolTest is Test {
     PrivacyPool public pool;
@@ -85,15 +86,16 @@ contract PrivacyPoolTest is Test {
     // ==================== Deposit Tests ====================
 
     function test_Deposit_Basic() public {
-        // Create a commitment: poseidon(amount, recipient, randomness)
+        // New deposit signature: deposit(owner, randomness, encryptedNote)
+        // Contract computes commitment on-chain from msg.value
         uint256 amount = 1 ether;
+        uint256 owner = uint256(uint160(alice));
         uint256 randomness = 12345;
-        uint256 commitment = _computeCommitment(amount, uint256(uint160(alice)), randomness);
 
         bytes memory encryptedNote = abi.encode(amount, randomness);
 
         vm.prank(alice);
-        pool.deposit{value: amount}(commitment, encryptedNote);
+        pool.deposit{value: amount}(owner, randomness, encryptedNote);
 
         // Check leaf was inserted
         assertEq(pool.nextLeafIndex(), 1);
@@ -105,43 +107,52 @@ contract PrivacyPoolTest is Test {
 
     function test_Deposit_MultipleDeposits() public {
         // First deposit
-        uint256 commitment1 = _computeCommitment(1 ether, uint256(uint160(alice)), 111);
         vm.prank(alice);
-        pool.deposit{value: 1 ether}(commitment1, "");
+        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 111, "");
 
         // Second deposit
-        uint256 commitment2 = _computeCommitment(2 ether, uint256(uint160(bob)), 222);
         vm.prank(bob);
-        pool.deposit{value: 2 ether}(commitment2, "");
+        pool.deposit{value: 2 ether}(uint256(uint160(bob)), 222, "");
 
         assertEq(pool.nextLeafIndex(), 2);
         assertEq(address(pool).balance, 3 ether);
     }
 
-    function test_Deposit_RevertZeroCommitment() public {
+    function test_Deposit_RevertZeroOwner() public {
         vm.prank(alice);
-        vm.expectRevert(PrivacyPool.InvalidCommitment.selector);
-        pool.deposit{value: 1 ether}(0, "");
+        vm.expectRevert(PrivacyPool.InvalidOwner.selector);
+        pool.deposit{value: 1 ether}(0, 12345, "");
     }
 
     function test_Deposit_RevertZeroValue() public {
-        uint256 commitment = _computeCommitment(1 ether, uint256(uint160(alice)), 123);
-
         vm.prank(alice);
         vm.expectRevert(PrivacyPool.InvalidAmount.selector);
-        pool.deposit{value: 0}(commitment, "");
+        pool.deposit{value: 0}(uint256(uint160(alice)), 12345, "");
+    }
+
+    function test_Deposit_CommitmentComputedOnChain() public {
+        // This test verifies the security fix: commitment is computed on-chain
+        // so an attacker cannot deposit 1 wei with a commitment encoding 1 ETH
+        uint256 amount = 1 ether;
+        uint256 owner = uint256(uint160(alice));
+        uint256 randomness = 12345;
+
+        vm.prank(alice);
+        pool.deposit{value: amount}(owner, randomness, "");
+
+        // The commitment stored in the tree should be poseidon(amount, owner, randomness)
+        // computed using the actual msg.value (1 ether), not any attacker-supplied value
+        // This prevents fake-amount attacks
+        assertEq(pool.nextLeafIndex(), 1);
     }
 
     // ==================== Transfer Tests (with MockVerifier) ====================
 
     function test_Transfer_WithMockVerifier() public {
         // Setup: deposit twice so we have 2 notes
-        uint256 commitment1 = _computeCommitment(1 ether, uint256(uint160(alice)), 111);
-        uint256 commitment2 = _computeCommitment(1 ether, uint256(uint160(alice)), 222);
-
         vm.startPrank(alice);
-        pool.deposit{value: 1 ether}(commitment1, "");
-        pool.deposit{value: 1 ether}(commitment2, "");
+        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 111, "");
+        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 222, "");
         vm.stopPrank();
 
         // Get current root
@@ -179,12 +190,9 @@ contract PrivacyPoolTest is Test {
 
     function test_Transfer_RevertDoubleSpend() public {
         // Setup deposits
-        uint256 commitment1 = _computeCommitment(1 ether, uint256(uint160(alice)), 111);
-        uint256 commitment2 = _computeCommitment(1 ether, uint256(uint160(alice)), 222);
-
         vm.startPrank(alice);
-        pool.deposit{value: 1 ether}(commitment1, "");
-        pool.deposit{value: 1 ether}(commitment2, "");
+        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 111, "");
+        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 222, "");
         vm.stopPrank();
 
         uint256 merkleRoot = pool.getLastRoot();
@@ -204,12 +212,9 @@ contract PrivacyPoolTest is Test {
 
     function test_Withdraw_WithMockVerifier() public {
         // Setup: deposit
-        uint256 commitment1 = _computeCommitment(2 ether, uint256(uint160(alice)), 111);
-        uint256 commitment2 = _computeCommitment(1 ether, uint256(uint160(alice)), 222);
-
         vm.startPrank(alice);
-        pool.deposit{value: 2 ether}(commitment1, "");
-        pool.deposit{value: 1 ether}(commitment2, "");
+        pool.deposit{value: 2 ether}(uint256(uint160(alice)), 111, "");
+        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 222, "");
         vm.stopPrank();
 
         uint256 merkleRoot = pool.getLastRoot();

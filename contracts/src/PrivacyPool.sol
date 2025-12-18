@@ -51,6 +51,8 @@ contract PrivacyPool {
         uint256 indexed commitment,
         uint256 indexed leafIndex,
         uint256 amount,
+        uint256 owner,
+        uint256 randomness,
         bytes encryptedNote
     );
 
@@ -79,6 +81,8 @@ contract PrivacyPool {
 
     error InvalidCommitment();
     error InvalidAmount();
+    error InvalidOwner();
+    error InvalidRandomness();
     error InvalidProof();
     error UnknownRoot();
     error NullifierAlreadySpent();
@@ -127,15 +131,23 @@ contract PrivacyPool {
     // ========================== DEPOSIT ==========================
 
     /// @notice Deposit ETH and create a shielded note
-    /// @param commitment poseidon(amount, recipientAddress, randomness)
+    /// @param noteOwner The recipient's address as a field element
+    /// @param randomness Random value for commitment uniqueness
     /// @param encryptedNote ECIES-encrypted note data for recipient
-    function deposit(uint256 commitment, bytes calldata encryptedNote) external payable {
-        if (commitment == 0 || commitment >= FIELD_SIZE) revert InvalidCommitment();
+    /// @dev Commitment is computed on-chain as poseidon(msg.value, noteOwner, randomness)
+    ///      to prevent fake-amount attacks where attacker deposits 1 wei but claims 1 ETH
+    function deposit(uint256 noteOwner, uint256 randomness, bytes calldata encryptedNote) external payable {
         if (msg.value == 0 || msg.value >= FIELD_SIZE) revert InvalidAmount();
+        if (noteOwner == 0 || noteOwner >= FIELD_SIZE) revert InvalidOwner();
+        if (randomness == 0 || randomness >= FIELD_SIZE) revert InvalidRandomness();
+
+        // Compute commitment on-chain - this is the security fix
+        // Ensures commitment always encodes the actual msg.value
+        uint256 commitment = PoseidonT4.hash([msg.value, noteOwner, randomness]);
 
         uint256 leafIndex = _insertLeaf(commitment);
 
-        emit Deposit(commitment, leafIndex, msg.value, encryptedNote);
+        emit Deposit(commitment, leafIndex, msg.value, noteOwner, randomness, encryptedNote);
     }
 
     // ========================== TRANSFER ==========================

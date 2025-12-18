@@ -56,7 +56,8 @@ export const PRIVACY_POOL_ABI = [
     type: 'function',
     stateMutability: 'payable',
     inputs: [
-      { name: 'commitment', type: 'uint256' },
+      { name: 'owner', type: 'uint256' },
+      { name: 'randomness', type: 'uint256' },
       { name: 'encryptedNote', type: 'bytes' },
     ],
     outputs: [],
@@ -104,6 +105,8 @@ export const PRIVACY_POOL_EVENTS = {
       { name: 'commitment', type: 'uint256', indexed: true },
       { name: 'leafIndex', type: 'uint256', indexed: true },
       { name: 'amount', type: 'uint256', indexed: false },
+      { name: 'owner', type: 'uint256', indexed: false },
+      { name: 'randomness', type: 'uint256', indexed: false },
       { name: 'encryptedNote', type: 'bytes', indexed: false },
     ],
   },
@@ -198,9 +201,14 @@ export async function isRootKnown(root: bigint): Promise<boolean> {
 
 /**
  * Submit a deposit to L1
+ * @param owner The recipient's address as a field element
+ * @param randomness Random value for commitment uniqueness
+ * @param amount Amount of ETH to deposit (in wei)
+ * @param encryptedNote Optional encrypted note data
  */
 export async function submitDeposit(
-  commitment: bigint,
+  owner: bigint,
+  randomness: bigint,
   amount: bigint,
   encryptedNote: Hex = '0x'
 ): Promise<Hex> {
@@ -212,7 +220,7 @@ export async function submitDeposit(
     address: CONTRACTS.privacyPool as Hex,
     abi: PRIVACY_POOL_ABI,
     functionName: 'deposit',
-    args: [commitment, encryptedNote],
+    args: [owner, randomness, encryptedNote],
     value: amount,
   });
 

@@ -17,6 +17,8 @@ interface DepositEvent {
   commitment: bigint;
   leafIndex: number;
   amount: bigint;
+  owner: bigint;
+  randomness: bigint;
   encryptedNote: Hex;
   blockNumber: bigint;
   logIndex: number;
@@ -70,7 +72,7 @@ export async function syncFromChain(
   const [depositLogs, transferLogs, withdrawLogs] = await Promise.all([
     l1Public.getLogs({
       address: poolAddress,
-      event: parseAbiItem('event Deposit(uint256 indexed commitment, uint256 indexed leafIndex, uint256 amount, bytes encryptedNote)'),
+      event: parseAbiItem('event Deposit(uint256 indexed commitment, uint256 indexed leafIndex, uint256 amount, uint256 owner, uint256 randomness, bytes encryptedNote)'),
       fromBlock: DEPLOY_BLOCK,
       toBlock: 'latest',
     }),
@@ -101,6 +103,8 @@ export async function syncFromChain(
       commitment: args.commitment,
       leafIndex: Number(args.leafIndex),
       amount: args.amount,
+      owner: args.owner,
+      randomness: args.randomness,
       encryptedNote: args.encryptedNote,
       blockNumber: log.blockNumber,
       logIndex: log.logIndex,
@@ -218,7 +222,7 @@ export async function getEventsSinceBlock(fromBlock: bigint): Promise<PoolEvent[
   const [depositLogs, transferLogs, withdrawLogs] = await Promise.all([
     l1Public.getLogs({
       address: poolAddress,
-      event: parseAbiItem('event Deposit(uint256 indexed commitment, uint256 indexed leafIndex, uint256 amount, bytes encryptedNote)'),
+      event: parseAbiItem('event Deposit(uint256 indexed commitment, uint256 indexed leafIndex, uint256 amount, uint256 owner, uint256 randomness, bytes encryptedNote)'),
       fromBlock,
       toBlock: 'latest',
     }),
@@ -244,6 +248,8 @@ export async function getEventsSinceBlock(fromBlock: bigint): Promise<PoolEvent[
       commitment: args.commitment,
       leafIndex: Number(args.leafIndex),
       amount: args.amount,
+      owner: args.owner,
+      randomness: args.randomness,
       encryptedNote: args.encryptedNote,
       blockNumber: log.blockNumber,
       logIndex: log.logIndex,
@@ -298,7 +304,7 @@ export async function getDepositEvents(): Promise<DepositEvent[]> {
 
   const logs = await l1Public.getLogs({
     address: poolAddress,
-    event: parseAbiItem('event Deposit(uint256 indexed commitment, uint256 indexed leafIndex, uint256 amount, bytes encryptedNote)'),
+    event: parseAbiItem('event Deposit(uint256 indexed commitment, uint256 indexed leafIndex, uint256 amount, uint256 owner, uint256 randomness, bytes encryptedNote)'),
     fromBlock: DEPLOY_BLOCK,
     toBlock: 'latest',
   });
@@ -310,6 +316,8 @@ export async function getDepositEvents(): Promise<DepositEvent[]> {
       commitment: args.commitment,
       leafIndex: Number(args.leafIndex),
       amount: args.amount,
+      owner: args.owner,
+      randomness: args.randomness,
       encryptedNote: args.encryptedNote,
       blockNumber: log.blockNumber,
       logIndex: log.logIndex,

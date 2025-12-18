@@ -791,8 +791,8 @@ export class RpcAdapter {
     const randomBytes2 = crypto.getRandomValues(new Uint8Array(32));
     const randomness2 = BigInt('0x' + Array.from(randomBytes2).map(b => b.toString(16).padStart(2, '0')).join('')) % FIELD_SIZE;
 
-    const commitment1 = computeCommitment(amount1, owner, randomness1);
-    const commitment2 = computeCommitment(amount2, owner, randomness2);
+    // Note: commitment is now computed on-chain from (msg.value, owner, randomness)
+    // We still compute it locally to store the note, but don't pass it to the contract
 
     // Encrypt note data with user's public key (ECIES)
     const encryptedNote1 = await encryptNoteData(session.keys.encryptionPubKey, {
@@ -808,18 +808,20 @@ export class RpcAdapter {
 
     console.log(`[GetTestEth] Submitting 2 L1 deposits: ${amount1} + ${amount2} wei`);
 
-    const l1Hash1 = await submitDeposit(commitment1, amount1, encryptedNote1);
+    // New deposit signature: (owner, randomness, amount, encryptedNote)
+    // Contract computes commitment on-chain to prevent fake-amount attacks
+    const l1Hash1 = await submitDeposit(owner, randomness1, amount1, encryptedNote1);
     const receipt1 = await waitForReceipt(l1Hash1);
     const leafIndex1 = parseDepositLeafIndex(receipt1);
 
-    const l1Hash2 = await submitDeposit(commitment2, amount2, encryptedNote2);
+    const l1Hash2 = await submitDeposit(owner, randomness2, amount2, encryptedNote2);
     const receipt2 = await waitForReceipt(l1Hash2);
     const leafIndex2 = parseDepositLeafIndex(receipt2);
 
     // Sync merkle tree from chain to ensure consistency
     await syncFromChain(this.merkleTree, this.spentNullifiers, this.usedIntents);
 
-    // Add notes to user's store
+    // Add notes to user's store (createNoteWithRandomness computes commitment internally)
     const note1 = createNoteWithRandomness(amount1, owner, randomness1, leafIndex1);
     session.noteStore.addNote(note1);
     const note2 = createNoteWithRandomness(amount2, owner, randomness2, leafIndex2);

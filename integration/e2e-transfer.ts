@@ -111,20 +111,20 @@ async function main() {
   for (let i = 0; i < 2; i++) {
     const randomness = randomBigInt();
     const owner = BigInt(account.address);
-    const commitment = computeCommitment(depositAmount, owner, randomness);
 
     console.log(`Depositing note ${i}: ${depositAmount} wei`);
 
-    // Call deposit on contract
+    // Call deposit on contract - commitment is computed on-chain
+    // New signature: deposit(owner, randomness, encryptedNote)
     const depositHash = await privacyPool.write.deposit(
-      [commitment, '0x'], // commitment, empty encrypted note
+      [owner, randomness, '0x'], // owner, randomness, empty encrypted note
       { value: depositAmount }
     );
     const receipt = await publicClient.waitForTransactionReceipt({ hash: depositHash });
     console.log(`  Deposit tx: ${depositHash.slice(0, 20)}...`);
 
-    // Get leaf index from event
-    const depositLog = receipt.logs[0];
+    // Compute commitment locally for tracking (contract computes same value)
+    const commitment = computeCommitment(depositAmount, owner, randomness);
     const leafIndex = merkleTree.insert(commitment);
 
     notes.push({
