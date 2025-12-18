@@ -106,6 +106,7 @@ export class RpcAdapter {
   private spentNullifiers: Set<bigint> = new Set();
   private usedIntents: Set<bigint> = new Set();
   private txHashMapping: Map<string, string> = new Map(); // virtual -> L1
+  private inFlightTx: Map<string, Promise<string>> = new Map(); // signed tx -> pending result
   private initialized = false;
 
   constructor() {
@@ -324,6 +325,27 @@ export class RpcAdapter {
   // ==================== Transaction Methods ====================
 
   private async sendRawTransaction(signedTx: string): Promise<string> {
+    // Check for duplicate in-flight transaction
+    const existing = this.inFlightTx.get(signedTx);
+    if (existing) {
+      console.log('[RPC] Duplicate transaction detected, returning existing result');
+      return existing;
+    }
+
+    // Create promise for this transaction and track it
+    const txPromise = this.processTransaction(signedTx);
+    this.inFlightTx.set(signedTx, txPromise);
+
+    try {
+      const result = await txPromise;
+      return result;
+    } finally {
+      // Clean up after completion (success or failure)
+      this.inFlightTx.delete(signedTx);
+    }
+  }
+
+  private async processTransaction(signedTx: string): Promise<string> {
     // Check if chain needs refresh before processing
     if (await needsRefresh(this.merkleTree)) {
       console.log('[RPC] State refresh needed, syncing...');
