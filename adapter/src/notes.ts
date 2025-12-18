@@ -176,46 +176,6 @@ export function createNoteWithRandomness(
   };
 }
 
-/**
- * Try to decrypt a note using session keys
- * Returns null if decryption fails or note doesn't belong to us
- */
-export function tryDecryptNote(
-  encryptedNote: Uint8Array,
-  commitment: bigint,
-  leafIndex: number,
-  sessionKeys: SessionKeys
-): Note | null {
-  if (encryptedNote.length !== 64) {
-    return null;
-  }
-
-  try {
-    // Decode note data
-    const amount = bytesToBigInt(encryptedNote.slice(0, 32));
-    const randomness = bytesToBigInt(encryptedNote.slice(32, 64));
-
-    const owner = BigInt(sessionKeys.address);
-
-    // Verify commitment matches (using session's nullifierKeyHash)
-    const expectedCommitment = computeCommitment(amount, owner, randomness, sessionKeys.nullifierKeyHash);
-    if (expectedCommitment !== commitment) {
-      return null; // Not our note
-    }
-
-    return {
-      amount,
-      owner,
-      randomness,
-      commitment,
-      leafIndex,
-      spent: false,
-    };
-  } catch {
-    return null;
-  }
-}
-
 // ==================== Helpers ====================
 
 function bigIntToBytes(value: bigint, length: number): Uint8Array {
