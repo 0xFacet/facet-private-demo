@@ -2,7 +2,7 @@
   "name": "facet-private-demo",
   "private": true,
   "scripts": {
-    "postinstall": "cd adapter && npm install",
+    "postinstall": "cd adapter && npm install --include=dev",
     "build": "cd adapter && npm run build"
   },
   "engines": {
