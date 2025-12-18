@@ -2,7 +2,7 @@
 
 import { Noir } from '@noir-lang/noir_js';
 import { UltraHonkBackend } from '@aztec/bb.js';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { Hex, hexToBytes } from 'viem';
@@ -15,9 +15,14 @@ const __dirname = dirname(__filename);
 // Backend options - use keccak hash for Solidity verifier compatibility
 const BACKEND_OPTIONS = { keccak: true };
 
-// Circuit artifact paths (relative to adapter/src/)
-const TRANSFER_CIRCUIT_PATH = resolve(__dirname, '../../circuits/transfer/target/transfer.json');
-const WITHDRAW_CIRCUIT_PATH = resolve(__dirname, '../../circuits/withdraw/target/withdraw.json');
+// Circuit artifact paths - try repo root first (Heroku), then relative to dist (local)
+function findCircuit(name: string): string {
+  const fromCwd = resolve(process.cwd(), `circuits/${name}/target/${name}.json`);
+  if (existsSync(fromCwd)) return fromCwd;
+  return resolve(__dirname, `../../circuits/${name}/target/${name}.json`);
+}
+const TRANSFER_CIRCUIT_PATH = findCircuit('transfer');
+const WITHDRAW_CIRCUIT_PATH = findCircuit('withdraw');
 
 /**
  * Note data for circuit input
