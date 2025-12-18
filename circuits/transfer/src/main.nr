@@ -73,9 +73,6 @@ fn main(
     // Output note 1 (change back to sender)
     output_1_amount: u128,
     output_1_randomness: Field,
-
-    // Secret key for nullifier derivation
-    nullifier_key: Field,
 ) {
     // ========================== 1. COMPUTE SIGNING HASH ==========================
     // CRITICAL: This binds the ECDSA signature to the actual transaction fields
@@ -132,11 +129,11 @@ fn main(
     }
 
     // ========================== 6. VERIFY NULLIFIERS ==========================
-    // nullifier = poseidon(commitment, nullifier_key)
-    // Using nullifier_key ensures only the note owner can compute the nullifier
+    // nullifier = poseidon(commitment, randomness)
+    // Randomness is already committed in the note, making nullifiers deterministic per note
 
-    let computed_nullifier_0 = hash_2([commitment_0, nullifier_key]);
-    let computed_nullifier_1 = hash_2([commitment_1, nullifier_key]);
+    let computed_nullifier_0 = hash_2([commitment_0, input_0_randomness]);
+    let computed_nullifier_1 = hash_2([commitment_1, input_1_randomness]);
     assert(nullifier_0 == computed_nullifier_0, "Nullifier 0 mismatch");
     assert(nullifier_1 == computed_nullifier_1, "Nullifier 1 mismatch");
 

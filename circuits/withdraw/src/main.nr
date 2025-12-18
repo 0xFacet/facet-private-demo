@@ -69,9 +69,6 @@ fn main(
     // Change note (stays in pool, goes back to sender)
     change_amount: u128,
     change_randomness: Field,
-
-    // Secret key for nullifier derivation
-    nullifier_key: Field,
 ) {
     // ========================== 0. VALIDATE PUBLIC INPUT BOUNDS ==========================
     // withdraw_amount is a pub Field but used as u128 in value checks.
@@ -134,11 +131,11 @@ fn main(
     }
 
     // ========================== 6. VERIFY NULLIFIERS ==========================
-    // nullifier = poseidon(commitment, nullifier_key)
-    // Using nullifier_key ensures only the note owner can compute the nullifier
+    // nullifier = poseidon(commitment, randomness)
+    // Randomness is already committed in the note, making nullifiers deterministic per note
 
-    let computed_nullifier_0 = hash_2([commitment_0, nullifier_key]);
-    let computed_nullifier_1 = hash_2([commitment_1, nullifier_key]);
+    let computed_nullifier_0 = hash_2([commitment_0, input_0_randomness]);
+    let computed_nullifier_1 = hash_2([commitment_1, input_1_randomness]);
     assert(nullifier_0 == computed_nullifier_0, "Nullifier 0 mismatch");
     assert(nullifier_1 == computed_nullifier_1, "Nullifier 1 mismatch");
 

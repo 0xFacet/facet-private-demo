@@ -69,8 +69,6 @@ export interface TransferCircuitInputs {
 
   output1Amount: bigint;
   output1Randomness: bigint;
-
-  nullifierKey: bigint;
 }
 
 /**
@@ -98,8 +96,6 @@ export interface WithdrawCircuitInputs {
 
   changeAmount: bigint;
   changeRandomness: bigint;
-
-  nullifierKey: bigint;
 }
 
 /**
@@ -185,9 +181,6 @@ export function buildTransferInputs(inputs: TransferCircuitInputs): Record<strin
     // Output note 1
     output_1_amount: inputs.output1Amount.toString(),
     output_1_randomness: toNoirField(inputs.output1Randomness),
-
-    // Nullifier key
-    nullifier_key: toNoirField(inputs.nullifierKey),
   };
 }
 
@@ -272,9 +265,6 @@ export function buildWithdrawInputs(inputs: WithdrawCircuitInputs): Record<strin
     // Change note
     change_amount: inputs.changeAmount.toString(),
     change_randomness: toNoirField(inputs.changeRandomness),
-
-    // Nullifier key
-    nullifier_key: toNoirField(inputs.nullifierKey),
   };
 }
 

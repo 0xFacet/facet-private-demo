@@ -64,10 +64,11 @@ export function computeCommitment(amount: bigint, owner: bigint, randomness: big
 
 /**
  * Compute a nullifier for a note
- * nullifier = poseidon(commitment, nullifierKey)
+ * nullifier = poseidon(commitment, randomness)
+ * Randomness is already committed in the note, making nullifiers deterministic per note
  */
-export function computeNullifier(commitment: bigint, nullifierKey: bigint): bigint {
-  return poseidon2([commitment, nullifierKey]);
+export function computeNullifier(commitment: bigint, randomness: bigint): bigint {
+  return poseidon2([commitment, randomness]);
 }
 
 /**

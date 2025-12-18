@@ -93,10 +93,6 @@ async function main() {
   console.log(`Sender: ${account.address}`);
   console.log(`Recipient: ${recipientAddress}`);
 
-  // Nullifier key (in production, derived from signature)
-  const nullifierKey = randomBigInt();
-  console.log(`Nullifier key: ${nullifierKey.toString(16).slice(0, 16)}...`);
-
   // Deploy contracts
   console.log('\n--- Deploying Contracts ---');
   const addresses = await deployContracts();
@@ -211,9 +207,9 @@ async function main() {
   const proof0 = merkleTree.generateProof(notes[0].leafIndex);
   const proof1 = merkleTree.generateProof(notes[1].leafIndex);
 
-  // Compute nullifiers
-  const nullifier0 = computeNullifier(notes[0].commitment, nullifierKey);
-  const nullifier1 = computeNullifier(notes[1].commitment, nullifierKey);
+  // Compute nullifiers (using note randomness, which is committed)
+  const nullifier0 = computeNullifier(notes[0].commitment, notes[0].randomness);
+  const nullifier1 = computeNullifier(notes[1].commitment, notes[1].randomness);
   console.log(`Nullifier 0: ${nullifier0.toString(16).slice(0, 16)}...`);
   console.log(`Nullifier 1: ${nullifier1.toString(16).slice(0, 16)}...`);
 
@@ -281,8 +277,6 @@ async function main() {
 
     output1Amount,
     output1Randomness,
-
-    nullifierKey,
   };
 
   // ==================== GENERATE PROOF ====================
@@ -380,9 +374,6 @@ async function main() {
   const recipientAccount = privateKeyToAccount(TEST_PRIVATE_KEY_1 as Hex);
   console.log(`\nRecipient withdrawing: ${recipientAccount.address}`);
 
-  // Recipient's nullifier key (different from sender's)
-  const recipientNullifierKey = randomBigInt();
-
   // Get recipient's ETH balance before withdrawal
   const balanceBefore = await publicClient.getBalance({ address: recipientAccount.address });
   console.log(`Recipient ETH balance before: ${formatEther(balanceBefore)} ETH`);
@@ -448,9 +439,9 @@ async function main() {
   const phantomRandomness = randomBigInt();
   const phantomCommitment = computeCommitment(0n, BigInt(recipientAccount.address), phantomRandomness);
 
-  // Compute nullifiers
-  const withdrawNullifier0 = computeNullifier(recipientNote.commitment, recipientNullifierKey);
-  const withdrawNullifier1 = computeNullifier(phantomCommitment, recipientNullifierKey);
+  // Compute nullifiers (using note randomness, which is committed)
+  const withdrawNullifier0 = computeNullifier(recipientNote.commitment, recipientNote.randomness);
+  const withdrawNullifier1 = computeNullifier(phantomCommitment, phantomRandomness);
   console.log(`Nullifier 0: ${withdrawNullifier0.toString(16).slice(0, 16)}...`);
   console.log(`Nullifier 1 (phantom): ${withdrawNullifier1.toString(16).slice(0, 16)}...`);
 
@@ -502,7 +493,6 @@ async function main() {
 
     changeAmount,
     changeRandomness,
-    nullifierKey: recipientNullifierKey,
   };
 
   // ==================== GENERATE WITHDRAW PROOF ====================

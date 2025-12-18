@@ -438,9 +438,9 @@ export class RpcAdapter {
     const proof0 = this.merkleTree.generateProof(notes[0].leafIndex);
     const proof1 = this.merkleTree.generateProof(notes[1].leafIndex);
 
-    // Compute nullifiers
-    const nullifier0 = computeNullifier(notes[0].commitment, session.keys.nullifierKey);
-    const nullifier1 = computeNullifier(notes[1].commitment, session.keys.nullifierKey);
+    // Compute nullifiers (using note randomness, which is committed)
+    const nullifier0 = computeNullifier(notes[0].commitment, notes[0].randomness);
+    const nullifier1 = computeNullifier(notes[1].commitment, notes[1].randomness);
 
     // Output 0: to recipient
     const output0Owner = BigInt(recipient);
@@ -501,7 +501,6 @@ export class RpcAdapter {
       output0Randomness,
       output1Amount: change,
       output1Randomness,
-      nullifierKey: session.keys.nullifierKey,
     };
 
     console.log('[Transfer] Generating proof...');
@@ -597,9 +596,9 @@ export class RpcAdapter {
     const proof0 = this.merkleTree.generateProof(note0.leafIndex);
     const proof1 = this.merkleTree.generateProof(note1.leafIndex);
 
-    // Nullifiers
-    const nullifier0 = computeNullifier(note0.commitment, session.keys.nullifierKey);
-    const nullifier1 = computeNullifier(note1.commitment, session.keys.nullifierKey);
+    // Nullifiers (using note randomness, which is committed)
+    const nullifier0 = computeNullifier(note0.commitment, note0.randomness);
+    const nullifier1 = computeNullifier(note1.commitment, note1.randomness);
 
     // Change commitment
     const changeOwner = BigInt(senderAddress);
@@ -650,7 +649,6 @@ export class RpcAdapter {
       },
       changeAmount,
       changeRandomness,
-      nullifierKey: session.keys.nullifierKey,
     };
 
     console.log('[Withdraw] Generating proof...');
@@ -891,7 +889,7 @@ export class RpcAdapter {
           // Verify commitment
           const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
           if (expectedCommitment === dep.commitment) {
-            const nullifier = computeNullifier(dep.commitment, nullifierKey);
+            const nullifier = computeNullifier(dep.commitment, noteData.randomness);
             if (!this.spentNullifiers.has(nullifier)) {
               const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, dep.leafIndex);
               noteStore.addNote(note);
@@ -915,7 +913,7 @@ export class RpcAdapter {
             // Verify commitment
             const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
             if (expectedCommitment === xfer.commitments[i]) {
-              const nullifier = computeNullifier(xfer.commitments[i], nullifierKey);
+              const nullifier = computeNullifier(xfer.commitments[i], noteData.randomness);
               if (!this.spentNullifiers.has(nullifier)) {
                 const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, xfer.leafIndices[i]);
                 noteStore.addNote(note);
@@ -936,7 +934,7 @@ export class RpcAdapter {
         if (noteData && noteData.owner === userOwner) {
           const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
           if (expectedCommitment === w.changeCommitment) {
-            const nullifier = computeNullifier(w.changeCommitment, nullifierKey);
+            const nullifier = computeNullifier(w.changeCommitment, noteData.randomness);
             if (!this.spentNullifiers.has(nullifier)) {
               const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, w.changeLeafIndex);
               noteStore.addNote(note);

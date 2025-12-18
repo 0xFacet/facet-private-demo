@@ -103,7 +103,7 @@ export class NoteStore {
    * Compute the nullifier for a note
    */
   computeNoteNullifier(note: Note): bigint {
-    return computeNullifier(note.commitment, this.sessionKeys.nullifierKey);
+    return computeNullifier(note.commitment, note.randomness);
   }
 
   /**
