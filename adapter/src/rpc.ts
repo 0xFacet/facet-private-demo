@@ -268,6 +268,9 @@ export class RpcAdapter {
       case 'privacy_refresh':
         return this.refreshSession(params[0] as string);
 
+      case 'privacy_hasSession':
+        return this.sessions.has((params[0] as string).toLowerCase());
+
       default:
         throw new Error(`Method ${method} not supported`);
     }
@@ -280,11 +283,15 @@ export class RpcAdapter {
   }
 
   private getBalance(address: string): string {
-    const session = this.sessions.get(address.toLowerCase());
+    const normalized = address.toLowerCase();
+    const session = this.sessions.get(normalized);
     if (!session) {
+      console.log(`[Balance] No session for ${normalized}, active sessions: ${Array.from(this.sessions.keys()).join(', ') || 'none'}`);
       return '0x0';
     }
-    return toHex(session.noteStore.getBalance());
+    const balance = session.noteStore.getBalance();
+    console.log(`[Balance] ${normalized} -> ${balance}`);
+    return toHex(balance);
   }
 
   private getShieldedBalance(address: string): string {
@@ -1288,15 +1295,22 @@ export class RpcAdapter {
     // Sort transactions by timestamp (block number)
     recoveredTransactions.sort((a, b) => a.timestamp - b.timestamp);
 
+    // Count outgoing transactions (transfers + withdrawals) to determine starting nonce
+    // Each transfer/withdraw where user sent uses up a nonce
+    const outgoingCount = recoveredTransactions.filter(
+      tx => tx.type === 'transfer' || tx.type === 'withdraw'
+    ).length;
+    const startingNonce = BigInt(outgoingCount);
+
     this.sessions.set(normalizedAddress, {
       address: normalizedAddress,
       keys: sessionKeys,
       noteStore,
-      virtualNonce: 0n,
+      virtualNonce: startingNonce,
       transactions: recoveredTransactions,
     });
 
-    console.log(`[RegisterViewingKey] ${normalizedAddress}, recovered ${recoveredCount} notes`);
+    console.log(`[RegisterViewingKey] ${normalizedAddress}, recovered ${recoveredCount} notes, starting nonce ${startingNonce}`);
     return true;
   }
 

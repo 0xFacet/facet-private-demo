@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { encodeFunctionData, parseEther as viemParseEther, formatEther as viemFormatEther } from 'viem'
 
 // Configuration
@@ -40,6 +40,13 @@ interface Transaction {
   amount: string
   recipient?: string
   timestamp: number
+}
+
+interface Status {
+  message: string
+  type: 'success' | 'error' | 'pending'
+  txHash?: string
+  section?: 'deposit' | 'transfer' | 'withdraw'
 }
 
 const ETHERSCAN_URL = 'https://sepolia.etherscan.io/tx/'
@@ -108,6 +115,48 @@ async function switchToNetwork(chainId: string, addIfMissing = false) {
   }
 }
 
+// Status display component
+function StatusDisplay({ status, elapsedTime }: { status: Status | null; elapsedTime: number }) {
+  if (!status) return null
+
+  return (
+    <div
+      className={`rounded-lg p-3 text-sm flex items-center gap-3 ${
+        status.type === 'success'
+          ? 'bg-cyan-500/20 text-cyan-400'
+          : status.type === 'error'
+          ? 'bg-red-500/20 text-red-400'
+          : 'bg-orange-500/20 text-orange-400'
+      }`}
+    >
+      {status.type === 'pending' && (
+        <svg className="animate-spin h-4 w-4 flex-shrink-0" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+        </svg>
+      )}
+      <div className="flex-1">
+        <div>{status.message}</div>
+        {status.type === 'pending' && status.message.includes('proof') && (
+          <div className="text-xs opacity-75 mt-1">
+            {elapsedTime}s elapsed - proof generation takes ~60s on this demo server
+          </div>
+        )}
+        {status.type === 'success' && status.txHash && (
+          <a
+            href={`${ETHERSCAN_URL}${status.txHash}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs underline hover:no-underline mt-1 inline-block"
+          >
+            View on Etherscan
+          </a>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function App() {
   const [account, setAccount] = useState<string | null>(null)
   const [registered, setRegistered] = useState(false)
@@ -115,26 +164,81 @@ function App() {
   const [l1Balance, setL1Balance] = useState<string>('--')
   const [notes, setNotes] = useState<Note[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
-  const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'pending' } | null>(null)
+  const [status, setStatus] = useState<Status | null>(null)
   const [loading, setLoading] = useState<string | null>(null)
+  const [proofStartTime, setProofStartTime] = useState<number | null>(null)
+  const [elapsedTime, setElapsedTime] = useState(0)
+  const [sessionLost, setSessionLost] = useState(false)
 
-  // Form state
-  const [depositAmount, setDepositAmount] = useState('')
-  const [transferTo, setTransferTo] = useState('')
-  const [transferAmount, setTransferAmount] = useState('')
-  const [withdrawAmount, setWithdrawAmount] = useState('')
+  // Form state with status clearing
+  const [depositAmount, setDepositAmountRaw] = useState('')
+  const [transferTo, setTransferToRaw] = useState('')
+  const [transferAmount, setTransferAmountRaw] = useState('')
+  const [withdrawAmount, setWithdrawAmountRaw] = useState('')
 
-  const showStatus = useCallback((message: string, type: 'success' | 'error' | 'pending' = 'success') => {
-    setStatus({ message, type })
+  // Wrapper setters that clear status when user starts typing
+  const setDepositAmount = (v: string) => {
+    setDepositAmountRaw(v)
+    if (status?.section === 'deposit' && status?.type !== 'pending') setStatus(null)
+  }
+  const setTransferTo = (v: string) => {
+    setTransferToRaw(v)
+    if (status?.section === 'transfer' && status?.type !== 'pending') setStatus(null)
+  }
+  const setTransferAmount = (v: string) => {
+    setTransferAmountRaw(v)
+    if (status?.section === 'transfer' && status?.type !== 'pending') setStatus(null)
+  }
+  const setWithdrawAmount = (v: string) => {
+    setWithdrawAmountRaw(v)
+    if (status?.section === 'withdraw' && status?.type !== 'pending') setStatus(null)
+  }
+
+  // Track last successful tx hash for each section
+  const lastTxHash = useRef<string | null>(null)
+
+  // Timer for proof generation
+  useEffect(() => {
+    if (!proofStartTime) {
+      setElapsedTime(0)
+      return
+    }
+    const interval = setInterval(() => {
+      setElapsedTime(Math.floor((Date.now() - proofStartTime) / 1000))
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [proofStartTime])
+
+  const showStatus = useCallback((message: string, type: 'success' | 'error' | 'pending' = 'success', section?: 'deposit' | 'transfer' | 'withdraw', txHash?: string) => {
+    setStatus({ message, type, section, txHash })
     if (type === 'success') {
-      setTimeout(() => setStatus(null), 5000)
+      // Don't auto-dismiss - keep until form interaction
       setLoading(null)
+      setProofStartTime(null)
+    } else if (type === 'error') {
+      setProofStartTime(null)
     }
   }, [])
+
+  const checkSession = useCallback(async () => {
+    if (!account) return true
+    try {
+      const hasSession = await rpc('privacy_hasSession', [account]) as boolean
+      setSessionLost(!hasSession)
+      return hasSession
+    } catch (e) {
+      console.error('Session check error:', e)
+      return false
+    }
+  }, [account])
 
   const updateBalance = useCallback(async () => {
     if (!account) return
     try {
+      // Check session first
+      const hasSession = await checkSession()
+      if (!hasSession) return
+
       const [shielded, l1] = await Promise.all([
         rpc('eth_getBalance', [account, 'latest']) as Promise<string>,
         rpc('privacy_getL1Balance', [account]) as Promise<string>,
@@ -144,7 +248,7 @@ function App() {
     } catch (e) {
       console.error('Balance error:', e)
     }
-  }, [account])
+  }, [account, checkSession])
 
   const updateNotes = useCallback(async () => {
     if (!account) return
@@ -242,14 +346,14 @@ function App() {
       setLoading('deposit')
 
       // Ensure we're on Sepolia
-      showStatus('Switching to Sepolia...', 'pending')
+      showStatus('Switching to Sepolia...', 'pending', 'deposit')
       await switchToNetwork(SEPOLIA_CHAIN_ID)
 
       const amount = parseEther(depositAmount)
       const owner = BigInt(account!)
       const randomness = randomBigInt()
 
-      showStatus('Encrypting note data...', 'pending')
+      showStatus('Encrypting note data...', 'pending', 'deposit')
 
       // Get encrypted note from adapter
       const encryptedNote = await rpc('privacy_encryptNoteData', [
@@ -268,7 +372,7 @@ function App() {
         args: [owner, randomness, encryptedNote],
       })
 
-      showStatus('Confirm deposit in MetaMask...', 'pending')
+      showStatus('Confirm deposit in MetaMask...', 'pending', 'deposit')
 
       // User signs tx directly on Sepolia
       const txHash = await window.ethereum!.request({
@@ -281,17 +385,18 @@ function App() {
         }],
       }) as string
 
-      showStatus('Waiting for deposit confirmation...', 'pending')
+      showStatus('Waiting for deposit confirmation...', 'pending', 'deposit')
 
       // Tell adapter to watch for this deposit and sync
       await rpc('privacy_watchForDeposit', [account, txHash])
 
       await Promise.all([updateBalance(), updateNotes(), updateTransactions()])
       setDepositAmount('')
-      showStatus('Deposit complete! Your shielded balance is updated.')
+      lastTxHash.current = txHash
+      showStatus('Deposit complete!', 'success', 'deposit', txHash)
     } catch (e) {
       setLoading(null)
-      showStatus((e as Error).message, 'error')
+      showStatus((e as Error).message, 'error', 'deposit')
     }
   }
 
@@ -308,25 +413,27 @@ function App() {
       setLoading('transfer')
 
       // Check if recipient is registered before attempting transfer
-      showStatus('Checking recipient registration...', 'pending')
+      showStatus('Checking recipient registration...', 'pending', 'transfer')
       const recipientKey = await rpc('privacy_getEncryptionKey', [transferTo])
       if (!recipientKey) {
         throw new Error(`Recipient ${transferTo.slice(0, 10)}... is not registered. They must register a viewing key first.`)
       }
 
       // Ensure we're on virtual chain
-      showStatus('Switching to L2...', 'pending')
+      showStatus('Switching to L2...', 'pending', 'transfer')
       await switchToNetwork(VIRTUAL_CHAIN_ID, true)
 
       const weiAmount = '0x' + parseEther(transferAmount).toString(16)
-      showStatus('Confirm transfer in MetaMask...', 'pending')
+      // Start timing before MetaMask - the proof generation happens during the RPC call
+      setProofStartTime(Date.now())
+      showStatus('Confirm in MetaMask, then wait for proof generation...', 'pending', 'transfer')
 
       const txHash = await window.ethereum!.request({
         method: 'eth_sendTransaction',
         params: [{ from: account, to: transferTo, value: weiAmount }],
       }) as string
 
-      showStatus('Generating ZK proof (this takes ~30 seconds)...', 'pending')
+      showStatus('Submitting proof to L1...', 'pending', 'transfer')
 
       let receipt = null
       while (!receipt) {
@@ -334,13 +441,20 @@ function App() {
         receipt = await rpc('eth_getTransactionReceipt', [txHash])
       }
 
+      // Get the L1 tx hash from the receipt or transactions
       await Promise.all([updateBalance(), updateNotes(), updateTransactions()])
       setTransferTo('')
       setTransferAmount('')
-      showStatus('Transfer complete! Proof verified on Sepolia.')
+
+      // Find the L1 hash from the latest transaction (last in array)
+      const txList = await rpc('privacy_getTransactions', [account]) as Transaction[]
+      const latestTransfer = txList.filter(t => t.type === 'transfer').pop()
+      const l1Hash = latestTransfer?.l1Hash
+
+      showStatus('Transfer complete!', 'success', 'transfer', l1Hash)
     } catch (e) {
       setLoading(null)
-      showStatus((e as Error).message, 'error')
+      showStatus((e as Error).message, 'error', 'transfer')
     }
   }
 
@@ -354,18 +468,20 @@ function App() {
       setLoading('withdraw')
 
       // Ensure we're on virtual chain
-      showStatus('Switching to L2...', 'pending')
+      showStatus('Switching to L2...', 'pending', 'withdraw')
       await switchToNetwork(VIRTUAL_CHAIN_ID, true)
 
       const weiAmount = '0x' + parseEther(withdrawAmount).toString(16)
-      showStatus('Confirm withdrawal in MetaMask...', 'pending')
+      // Start timing before MetaMask - the proof generation happens during the RPC call
+      setProofStartTime(Date.now())
+      showStatus('Confirm in MetaMask, then wait for proof generation...', 'pending', 'withdraw')
 
       const txHash = await window.ethereum!.request({
         method: 'eth_sendTransaction',
         params: [{ from: account, to: WITHDRAW_SENTINEL, value: weiAmount }],
       }) as string
 
-      showStatus('Generating ZK proof (this takes ~30 seconds)...', 'pending')
+      showStatus('Submitting proof to L1...', 'pending', 'withdraw')
 
       let receipt = null
       while (!receipt) {
@@ -375,10 +491,16 @@ function App() {
 
       await Promise.all([updateBalance(), updateNotes(), updateTransactions()])
       setWithdrawAmount('')
-      showStatus('Withdrawal complete! ETH sent to your wallet.')
+
+      // Find the L1 hash from the latest transaction (last in array)
+      const txList = await rpc('privacy_getTransactions', [account]) as Transaction[]
+      const latestWithdraw = txList.filter(t => t.type === 'withdraw').pop()
+      const l1Hash = latestWithdraw?.l1Hash
+
+      showStatus('Withdrawal complete! ETH sent to your wallet.', 'success', 'withdraw', l1Hash)
     } catch (e) {
       setLoading(null)
-      showStatus((e as Error).message, 'error')
+      showStatus((e as Error).message, 'error', 'withdraw')
     }
   }
 
@@ -421,11 +543,29 @@ function App() {
                 </button>
               </>
             )}
+            {/* Global status for connect/register */}
+            {status && !status.section && <StatusDisplay status={status} elapsedTime={elapsedTime} />}
+          </div>
+        )}
+
+        {/* Session Lost Banner */}
+        {registered && sessionLost && (
+          <div className="bg-red-500/20 border border-red-500/50 rounded-xl p-4 text-red-400">
+            <div className="font-semibold mb-1">Session Expired</div>
+            <p className="text-sm mb-3">
+              The server was restarted and your session was lost. Please refresh the page to re-login.
+            </p>
+            <button
+              onClick={() => window.location.reload()}
+              className="bg-red-500 hover:bg-red-400 text-white font-semibold py-2 px-4 rounded-lg transition"
+            >
+              Refresh Page
+            </button>
           </div>
         )}
 
         {/* L1 Section */}
-        {registered && (
+        {registered && !sessionLost && (
           <div className="bg-slate-800 rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between">
               <div className="text-emerald-400 font-semibold">L1 Sepolia</div>
@@ -448,11 +588,13 @@ function App() {
                 {loading === 'deposit' ? '...' : 'Deposit to L2'}
               </button>
             </div>
+            {/* Deposit status */}
+            {status?.section === 'deposit' && <StatusDisplay status={status} elapsedTime={elapsedTime} />}
           </div>
         )}
 
         {/* L2 Section */}
-        {registered && (
+        {registered && !sessionLost && (
           <div className="bg-slate-800 rounded-xl p-4 space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -499,6 +641,8 @@ function App() {
                   {loading === 'transfer' ? '...' : 'Send'}
                 </button>
               </div>
+              {/* Transfer status */}
+              {status?.section === 'transfer' && <StatusDisplay status={status} elapsedTime={elapsedTime} />}
             </div>
 
             {/* Withdraw */}
@@ -521,6 +665,8 @@ function App() {
                   {loading === 'withdraw' ? '...' : 'Withdraw'}
                 </button>
               </div>
+              {/* Withdraw status */}
+              {status?.section === 'withdraw' && <StatusDisplay status={status} elapsedTime={elapsedTime} />}
             </div>
 
             {/* Notes */}
@@ -575,27 +721,6 @@ function App() {
                 </div>
               </div>
             )}
-          </div>
-        )}
-
-        {/* Status */}
-        {status && (
-          <div
-            className={`rounded-lg p-4 text-sm flex items-center gap-3 ${
-              status.type === 'success'
-                ? 'bg-cyan-500/20 text-cyan-400'
-                : status.type === 'error'
-                ? 'bg-red-500/20 text-red-400'
-                : 'bg-orange-500/20 text-orange-400'
-            }`}
-          >
-            {status.type === 'pending' && (
-              <svg className="animate-spin h-4 w-4 flex-shrink-0" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-              </svg>
-            )}
-            {status.message}
           </div>
         )}
       </div>
