@@ -67,7 +67,7 @@ interface JsonRpcRequest {
  * Transaction record for history
  */
 interface TransactionRecord {
-  type: 'deposit' | 'transfer' | 'withdraw';
+  type: 'deposit' | 'transfer' | 'transfer_in' | 'transfer_out' | 'transfer_self' | 'withdraw';
   virtualHash: string;
   l1Hash: string;
   amount: bigint;
@@ -606,9 +606,9 @@ export class RpcAdapter {
     const virtualHash = keccak256(signedTx);
     this.txHashMapping.set(virtualHash, l1Hash);
 
-    // Record transaction
+    // Record transaction (outgoing transfer)
     session.transactions.push({
-      type: 'transfer',
+      type: 'transfer_out',
       virtualHash,
       l1Hash,
       amount: value,
@@ -759,9 +759,9 @@ export class RpcAdapter {
     const virtualHash = keccak256(signedTx);
     this.txHashMapping.set(virtualHash, l1Hash);
 
-    // Record transaction
+    // Record transaction (outgoing transfer)
     session.transactions.push({
-      type: 'transfer',
+      type: 'transfer_out',
       virtualHash,
       l1Hash,
       amount: value,
@@ -1215,39 +1215,54 @@ export class RpcAdapter {
 
     // 2. Scan transfer events for received notes
     const transfers = await getTransferEvents();
-    const seenTransferTxs = new Set<string>();
 
     for (const xfer of transfers) {
-      // Try to decrypt both encrypted notes
+      // Try to decrypt both notes first to detect self-sends
+      const decryptedNotes: Array<{ index: number; amount: bigint; randomness: bigint; commitment: bigint; leafIndex: number }> = [];
+
       for (let i = 0; i < 2; i++) {
         const encNote = xfer.encryptedNotes[i];
         if (encNote && encNote.length > 2) {
           const noteData = decryptNoteData(encryptionPrivKey, encNote);
           if (noteData && noteData.owner === userOwner) {
-            // Verify commitment
             const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
             if (expectedCommitment === xfer.commitments[i]) {
-              const nullifier = computeNullifier(xfer.commitments[i], noteData.randomness);
-              if (!this.spentNullifiers.has(nullifier)) {
-                const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, xfer.leafIndices[i]);
-                noteStore.addNote(note);
-                recoveredCount++;
-              }
-              // Record transfer transaction (only once per tx)
-              if (!seenTransferTxs.has(xfer.txHash)) {
-                seenTransferTxs.add(xfer.txHash);
-                // If index 0 is ours, we received; if index 1 is ours, it's change (we sent)
-                recoveredTransactions.push({
-                  type: 'transfer',
-                  virtualHash: xfer.txHash,
-                  l1Hash: xfer.txHash,
-                  amount: noteData.amount,
-                  timestamp: Number(xfer.blockNumber),
-                });
-              }
+              decryptedNotes.push({
+                index: i,
+                amount: noteData.amount,
+                randomness: noteData.randomness,
+                commitment: xfer.commitments[i],
+                leafIndex: xfer.leafIndices[i],
+              });
             }
           }
         }
+      }
+
+      // Add unspent notes to store
+      for (const dn of decryptedNotes) {
+        const nullifier = computeNullifier(dn.commitment, dn.randomness);
+        if (!this.spentNullifiers.has(nullifier)) {
+          const note = createNoteWithRandomness(dn.amount, userOwner, dn.randomness, dn.leafIndex);
+          noteStore.addNote(note);
+          recoveredCount++;
+        }
+      }
+
+      // Record transaction
+      if (decryptedNotes.length > 0) {
+        const isSelfSend = decryptedNotes.length === 2;
+        // For display: use sent amount (index 0) for self-send, otherwise use what we have
+        const primaryNote = decryptedNotes.find(n => n.index === 0) || decryptedNotes[0];
+        const isSent = !isSelfSend && decryptedNotes[0].index === 1;
+
+        recoveredTransactions.push({
+          type: isSelfSend ? 'transfer_self' : (isSent ? 'transfer_out' : 'transfer_in'),
+          virtualHash: xfer.txHash,
+          l1Hash: xfer.txHash,
+          amount: primaryNote.amount,
+          timestamp: Number(xfer.blockNumber),
+        });
       }
     }
 
@@ -1295,10 +1310,10 @@ export class RpcAdapter {
     // Sort transactions by timestamp (block number)
     recoveredTransactions.sort((a, b) => a.timestamp - b.timestamp);
 
-    // Count outgoing transactions (transfers + withdrawals) to determine starting nonce
-    // Each transfer/withdraw where user sent uses up a nonce
+    // Count outgoing transactions (sent transfers + withdrawals) to determine starting nonce
+    // Each outgoing transaction uses up a nonce
     const outgoingCount = recoveredTransactions.filter(
-      tx => tx.type === 'transfer' || tx.type === 'withdraw'
+      tx => tx.type === 'transfer_out' || tx.type === 'withdraw'
     ).length;
     const startingNonce = BigInt(outgoingCount);
 
@@ -1423,8 +1438,10 @@ export class RpcAdapter {
 
     // Scan transfers
     const transfers = await getTransferEvents();
-    const seenTransferTxs = new Set<string>();
     for (const xfer of transfers) {
+      // Try to decrypt both notes first to detect self-sends
+      const decryptedNotes: Array<{ index: number; amount: bigint; randomness: bigint; commitment: bigint; leafIndex: number }> = [];
+
       for (let i = 0; i < 2; i++) {
         const encNote = xfer.encryptedNotes[i];
         if (encNote && encNote.length > 2) {
@@ -1432,24 +1449,40 @@ export class RpcAdapter {
           if (noteData && noteData.owner === userOwner) {
             const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
             if (expectedCommitment === xfer.commitments[i]) {
-              const nullifier = computeNullifier(xfer.commitments[i], noteData.randomness);
-              if (!this.spentNullifiers.has(nullifier)) {
-                const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, xfer.leafIndices[i]);
-                newNoteStore.addNote(note);
-              }
-              if (!seenTransferTxs.has(xfer.txHash)) {
-                seenTransferTxs.add(xfer.txHash);
-                newTransactions.push({
-                  type: 'transfer',
-                  virtualHash: xfer.txHash,
-                  l1Hash: xfer.txHash,
-                  amount: noteData.amount,
-                  timestamp: Number(xfer.blockNumber),
-                });
-              }
+              decryptedNotes.push({
+                index: i,
+                amount: noteData.amount,
+                randomness: noteData.randomness,
+                commitment: xfer.commitments[i],
+                leafIndex: xfer.leafIndices[i],
+              });
             }
           }
         }
+      }
+
+      // Add unspent notes to store
+      for (const dn of decryptedNotes) {
+        const nullifier = computeNullifier(dn.commitment, dn.randomness);
+        if (!this.spentNullifiers.has(nullifier)) {
+          const note = createNoteWithRandomness(dn.amount, userOwner, dn.randomness, dn.leafIndex);
+          newNoteStore.addNote(note);
+        }
+      }
+
+      // Record transaction
+      if (decryptedNotes.length > 0) {
+        const isSelfSend = decryptedNotes.length === 2;
+        const primaryNote = decryptedNotes.find(n => n.index === 0) || decryptedNotes[0];
+        const isSent = !isSelfSend && decryptedNotes[0].index === 1;
+
+        newTransactions.push({
+          type: isSelfSend ? 'transfer_self' : (isSent ? 'transfer_out' : 'transfer_in'),
+          virtualHash: xfer.txHash,
+          l1Hash: xfer.txHash,
+          amount: primaryNote.amount,
+          timestamp: Number(xfer.blockNumber),
+        });
       }
     }
 

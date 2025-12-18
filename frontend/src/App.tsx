@@ -34,7 +34,7 @@ interface Note {
 }
 
 interface Transaction {
-  type: 'deposit' | 'transfer' | 'withdraw'
+  type: 'deposit' | 'transfer' | 'transfer_in' | 'transfer_out' | 'transfer_self' | 'withdraw'
   virtualHash: string
   l1Hash: string
   amount: string
@@ -448,7 +448,7 @@ function App() {
 
       // Find the L1 hash from the latest transaction (last in array)
       const txList = await rpc('privacy_getTransactions', [account]) as Transaction[]
-      const latestTransfer = txList.filter(t => t.type === 'transfer').pop()
+      const latestTransfer = txList.filter(t => t.type === 'transfer' || t.type === 'transfer_out').pop()
       const l1Hash = latestTransfer?.l1Hash
 
       showStatus('Transfer complete!', 'success', 'transfer', l1Hash)
@@ -699,15 +699,20 @@ function App() {
                       <div className="flex items-center gap-2">
                         <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${
                           tx.type === 'deposit' ? 'bg-emerald-500/20 text-emerald-400' :
-                          tx.type === 'transfer' ? 'bg-cyan-500/20 text-cyan-400' :
+                          tx.type === 'transfer_in' ? 'bg-purple-500/20 text-purple-400' :
+                          tx.type === 'transfer_self' ? 'bg-slate-500/20 text-slate-400' :
+                          (tx.type === 'transfer' || tx.type === 'transfer_out') ? 'bg-cyan-500/20 text-cyan-400' :
                           'bg-orange-500/20 text-orange-400'
                         }`}>
-                          {tx.type === 'deposit' ? 'Deposit' : tx.type === 'transfer' ? 'Send' : 'Withdraw'}
+                          {tx.type === 'deposit' ? 'Deposit' :
+                           tx.type === 'transfer_in' ? 'Receive' :
+                           tx.type === 'transfer_self' ? 'Self' :
+                           (tx.type === 'transfer' || tx.type === 'transfer_out') ? 'Send' : 'Withdraw'}
                         </span>
                         <span className="text-slate-300 text-sm">
                           {formatEther(BigInt(tx.amount))} ETH
                         </span>
-                        {tx.recipient && tx.type === 'transfer' && (
+                        {tx.recipient && (tx.type === 'transfer' || tx.type === 'transfer_out') && (
                           <span className="text-slate-500 text-xs">
                             to {tx.recipient.slice(0, 6)}...{tx.recipient.slice(-4)}
                           </span>
