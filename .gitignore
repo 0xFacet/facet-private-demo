@@ -21,3 +21,5 @@ circuits/*/target/*
 
 # Logs
 *.log
+
+repomix-output*
