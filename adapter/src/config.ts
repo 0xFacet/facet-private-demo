@@ -19,5 +19,5 @@ export const CONTRACTS = {
 };
 
 // RPC configuration
-export const RPC_PORT = parseInt(process.env.RPC_PORT || '8546');
+export const RPC_PORT = parseInt(process.env.PORT || process.env.RPC_PORT || '8546');
 export const L1_RPC_URL = process.env.L1_RPC_URL || 'https://sepolia.infura.io/v3/YOUR_API_KEY';
