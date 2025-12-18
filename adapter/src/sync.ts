@@ -22,6 +22,7 @@ interface DepositEvent {
   encryptedNote: Hex;
   blockNumber: bigint;
   logIndex: number;
+  txHash: Hex;
 }
 
 interface TransferEvent {
@@ -33,6 +34,7 @@ interface TransferEvent {
   encryptedNotes: [Hex, Hex];
   blockNumber: bigint;
   logIndex: number;
+  txHash: Hex;
 }
 
 interface WithdrawEvent {
@@ -46,6 +48,7 @@ interface WithdrawEvent {
   encryptedChange: Hex;
   blockNumber: bigint;
   logIndex: number;
+  txHash: Hex;
 }
 
 type PoolEvent = DepositEvent | TransferEvent | WithdrawEvent;
@@ -108,6 +111,7 @@ export async function syncFromChain(
       encryptedNote: args.encryptedNote,
       blockNumber: log.blockNumber,
       logIndex: log.logIndex,
+      txHash: log.transactionHash,
     });
   }
 
@@ -123,6 +127,7 @@ export async function syncFromChain(
       encryptedNotes: args.encryptedNotes,
       blockNumber: log.blockNumber,
       logIndex: log.logIndex,
+      txHash: log.transactionHash,
     });
   }
 
@@ -140,6 +145,7 @@ export async function syncFromChain(
       encryptedChange: args.encryptedChange,
       blockNumber: log.blockNumber,
       logIndex: log.logIndex,
+      txHash: log.transactionHash,
     });
   }
 
@@ -253,6 +259,7 @@ export async function getEventsSinceBlock(fromBlock: bigint): Promise<PoolEvent[
       encryptedNote: args.encryptedNote,
       blockNumber: log.blockNumber,
       logIndex: log.logIndex,
+      txHash: log.transactionHash,
     });
   }
 
@@ -267,6 +274,7 @@ export async function getEventsSinceBlock(fromBlock: bigint): Promise<PoolEvent[
       encryptedNotes: args.encryptedNotes,
       blockNumber: log.blockNumber,
       logIndex: log.logIndex,
+      txHash: log.transactionHash,
     });
   }
 
@@ -283,6 +291,7 @@ export async function getEventsSinceBlock(fromBlock: bigint): Promise<PoolEvent[
       encryptedChange: args.encryptedChange,
       blockNumber: log.blockNumber,
       logIndex: log.logIndex,
+      txHash: log.transactionHash,
     });
   }
 
@@ -321,6 +330,7 @@ export async function getDepositEvents(): Promise<DepositEvent[]> {
       encryptedNote: args.encryptedNote,
       blockNumber: log.blockNumber,
       logIndex: log.logIndex,
+      txHash: log.transactionHash,
     };
   });
 }
@@ -349,6 +359,7 @@ export async function getTransferEvents(): Promise<TransferEvent[]> {
       encryptedNotes: args.encryptedNotes,
       blockNumber: log.blockNumber,
       logIndex: log.logIndex,
+      txHash: log.transactionHash,
     };
   });
 }
@@ -379,6 +390,7 @@ export async function getWithdrawEvents(): Promise<WithdrawEvent[]> {
       encryptedChange: args.encryptedChange,
       blockNumber: log.blockNumber,
       logIndex: log.logIndex,
+      txHash: log.transactionHash,
     };
   });
 }

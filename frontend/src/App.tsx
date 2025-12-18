@@ -33,6 +33,17 @@ interface Note {
   spent: boolean
 }
 
+interface Transaction {
+  type: 'deposit' | 'transfer' | 'withdraw'
+  virtualHash: string
+  l1Hash: string
+  amount: string
+  recipient?: string
+  timestamp: number
+}
+
+const ETHERSCAN_URL = 'https://sepolia.etherscan.io/tx/'
+
 declare global {
   interface Window {
     ethereum?: {
@@ -62,7 +73,7 @@ function parseEther(eth: string): bigint {
 function formatEther(wei: bigint): string {
   const full = viemFormatEther(wei)
   const num = parseFloat(full)
-  return num.toLocaleString('en-US', { maximumFractionDigits: 4 })
+  return num.toLocaleString('en-US', { minimumFractionDigits: 5, maximumFractionDigits: 5 })
 }
 
 // Generate random bigint for note randomness
@@ -103,6 +114,7 @@ function App() {
   const [balance, setBalance] = useState<string>('--')
   const [l1Balance, setL1Balance] = useState<string>('--')
   const [notes, setNotes] = useState<Note[]>([])
+  const [transactions, setTransactions] = useState<Transaction[]>([])
   const [status, setStatus] = useState<{ message: string; type: 'success' | 'error' | 'pending' } | null>(null)
   const [loading, setLoading] = useState<string | null>(null)
 
@@ -144,13 +156,37 @@ function App() {
     }
   }, [account])
 
+  const updateTransactions = useCallback(async () => {
+    if (!account) return
+    try {
+      const txList = await rpc('privacy_getTransactions', [account]) as Transaction[]
+      setTransactions(txList)
+    } catch (e) {
+      console.error('Transactions error:', e)
+    }
+  }, [account])
+
+  const refreshAll = useCallback(async () => {
+    if (!account) return
+    try {
+      setLoading('refresh')
+      await rpc('privacy_refresh', [account])
+      await Promise.all([updateBalance(), updateNotes(), updateTransactions()])
+      setLoading(null)
+    } catch (e) {
+      console.error('Refresh error:', e)
+      setLoading(null)
+    }
+  }, [account, updateBalance, updateNotes, updateTransactions])
+
   // Update data when account/registered changes
   useEffect(() => {
     if (account && registered) {
       updateBalance()
       updateNotes()
+      updateTransactions()
     }
-  }, [account, registered, updateBalance, updateNotes])
+  }, [account, registered, updateBalance, updateNotes, updateTransactions])
 
   // Connect wallet
   const connect = async () => {
@@ -250,7 +286,7 @@ function App() {
       // Tell adapter to watch for this deposit and sync
       await rpc('privacy_watchForDeposit', [account, txHash])
 
-      await Promise.all([updateBalance(), updateNotes()])
+      await Promise.all([updateBalance(), updateNotes(), updateTransactions()])
       setDepositAmount('')
       showStatus('Deposit complete! Your shielded balance is updated.')
     } catch (e) {
@@ -298,7 +334,7 @@ function App() {
         receipt = await rpc('eth_getTransactionReceipt', [txHash])
       }
 
-      await Promise.all([updateBalance(), updateNotes()])
+      await Promise.all([updateBalance(), updateNotes(), updateTransactions()])
       setTransferTo('')
       setTransferAmount('')
       showStatus('Transfer complete! Proof verified on Sepolia.')
@@ -337,7 +373,7 @@ function App() {
         receipt = await rpc('eth_getTransactionReceipt', [txHash])
       }
 
-      await Promise.all([updateBalance(), updateNotes()])
+      await Promise.all([updateBalance(), updateNotes(), updateTransactions()])
       setWithdrawAmount('')
       showStatus('Withdrawal complete! ETH sent to your wallet.')
     } catch (e) {
@@ -362,7 +398,7 @@ function App() {
 
         {/* Connect / Register */}
         {(!account || !registered) && (
-          <div className="bg-slate-800 rounded-xl p-4">
+          <div className="bg-slate-800 rounded-xl p-4 space-y-3">
             {!account ? (
               <button
                 onClick={connect}
@@ -372,13 +408,18 @@ function App() {
                 Connect Wallet
               </button>
             ) : (
-              <button
-                onClick={register}
-                disabled={!!loading}
-                className="w-full bg-slate-700 hover:bg-slate-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-cyan-400 disabled:text-slate-500 font-semibold py-3 px-6 rounded-lg transition"
-              >
-                {loading === 'register' ? 'Registering...' : 'Register Viewing Key'}
-              </button>
+              <>
+                <p className="text-slate-400 text-sm">
+                  Sign a message to create a viewing key and register it with the privacy adapter. The adapter can see your private transactions but it cannot spend your funds. This requires some trust, but you can always run your own adapter instance instead.
+                </p>
+                <button
+                  onClick={register}
+                  disabled={!!loading}
+                  className="w-full bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 font-semibold py-3 px-6 rounded-lg transition"
+                >
+                  {loading === 'register' ? 'Signing...' : 'Login to Private Wallet'}
+                </button>
+              </>
             )}
           </div>
         )}
@@ -404,7 +445,7 @@ function App() {
                 disabled={!!loading}
                 className="bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 disabled:text-slate-400 font-semibold py-2 px-4 rounded-lg transition whitespace-nowrap"
               >
-                {loading === 'deposit' ? '...' : 'Deposit →'}
+                {loading === 'deposit' ? '...' : 'Deposit to L2'}
               </button>
             </div>
           </div>
@@ -414,7 +455,19 @@ function App() {
         {registered && (
           <div className="bg-slate-800 rounded-xl p-4 space-y-4">
             <div className="flex items-center justify-between">
-              <div className="text-cyan-400 font-semibold">L2 Shielded</div>
+              <div className="flex items-center gap-2">
+                <div className="text-cyan-400 font-semibold">L2 Facet Private</div>
+                <button
+                  onClick={refreshAll}
+                  disabled={!!loading}
+                  className="p-1 text-slate-500 hover:text-cyan-400 disabled:opacity-50 transition"
+                  title="Refresh"
+                >
+                  <svg className={`w-4 h-4 ${loading === 'refresh' ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+              </div>
               <div className="text-cyan-400 font-bold">{balance} ETH</div>
             </div>
 
@@ -475,10 +528,49 @@ function App() {
               <div className="pt-2 border-t border-slate-700">
                 <div className="text-slate-400 text-sm mb-2">Notes ({unspentNotes.length})</div>
                 <div className="flex flex-wrap gap-2">
-                  {unspentNotes.map((note, i) => (
-                    <div key={i} className="bg-slate-700 rounded px-2 py-1 text-sm text-cyan-400">
+                  {unspentNotes.map((note) => (
+                    <div key={note.commitment} className="bg-slate-700 rounded px-2 py-1 text-sm text-cyan-400">
                       {formatEther(BigInt(note.amount))} ETH
                     </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Transaction History */}
+            {transactions.length > 0 && (
+              <div className="pt-2 border-t border-slate-700">
+                <div className="text-slate-400 text-sm mb-2">History</div>
+                <div className="space-y-2">
+                  {transactions.slice().reverse().map((tx) => (
+                    <a
+                      key={tx.l1Hash}
+                      href={`${ETHERSCAN_URL}${tx.l1Hash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-between p-2 bg-slate-700 rounded hover:bg-slate-600 transition"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${
+                          tx.type === 'deposit' ? 'bg-emerald-500/20 text-emerald-400' :
+                          tx.type === 'transfer' ? 'bg-cyan-500/20 text-cyan-400' :
+                          'bg-orange-500/20 text-orange-400'
+                        }`}>
+                          {tx.type === 'deposit' ? 'Deposit' : tx.type === 'transfer' ? 'Send' : 'Withdraw'}
+                        </span>
+                        <span className="text-slate-300 text-sm">
+                          {formatEther(BigInt(tx.amount))} ETH
+                        </span>
+                        {tx.recipient && tx.type === 'transfer' && (
+                          <span className="text-slate-500 text-xs">
+                            to {tx.recipient.slice(0, 6)}...{tx.recipient.slice(-4)}
+                          </span>
+                        )}
+                      </div>
+                      <svg className="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                      </svg>
+                    </a>
                   ))}
                 </div>
               </div>

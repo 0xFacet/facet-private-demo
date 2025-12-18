@@ -64,6 +64,18 @@ interface JsonRpcRequest {
 }
 
 /**
+ * Transaction record for history
+ */
+interface TransactionRecord {
+  type: 'deposit' | 'transfer' | 'withdraw';
+  virtualHash: string;
+  l1Hash: string;
+  amount: bigint;
+  recipient?: string; // For transfers
+  timestamp: number;
+}
+
+/**
  * User session state
  */
 interface UserSession {
@@ -71,6 +83,7 @@ interface UserSession {
   keys: SessionKeys;
   noteStore: NoteStore;
   virtualNonce: bigint;
+  transactions: TransactionRecord[];
 }
 
 /**
@@ -247,6 +260,12 @@ export class RpcAdapter {
 
       case 'privacy_getEncryptionKey':
         return this.getEncryptionKey(params[0] as string);
+
+      case 'privacy_getTransactions':
+        return this.getTransactions(params[0] as string);
+
+      case 'privacy_refresh':
+        return this.refreshSession(params[0] as string);
 
       default:
         throw new Error(`Method ${method} not supported`);
@@ -558,6 +577,16 @@ export class RpcAdapter {
     const virtualHash = keccak256(signedTx);
     this.txHashMapping.set(virtualHash, l1Hash);
 
+    // Record transaction
+    session.transactions.push({
+      type: 'transfer',
+      virtualHash,
+      l1Hash,
+      amount: value,
+      recipient,
+      timestamp: Date.now(),
+    });
+
     console.log(`[Transfer] Complete! l1Hash=${l1Hash}`);
     return virtualHash;
   }
@@ -700,6 +729,16 @@ export class RpcAdapter {
 
     const virtualHash = keccak256(signedTx);
     this.txHashMapping.set(virtualHash, l1Hash);
+
+    // Record transaction
+    session.transactions.push({
+      type: 'transfer',
+      virtualHash,
+      l1Hash,
+      amount: value,
+      recipient,
+      timestamp: Date.now(),
+    });
 
     console.log(`[Transfer] Complete (single-note)! l1Hash=${l1Hash}`);
     return virtualHash;
@@ -849,6 +888,16 @@ export class RpcAdapter {
     const virtualHash = keccak256(signedTx);
     this.txHashMapping.set(virtualHash, l1Hash);
 
+    // Record transaction
+    session.transactions.push({
+      type: 'withdraw',
+      virtualHash,
+      l1Hash,
+      amount: withdrawAmount,
+      recipient: withdrawRecipient,
+      timestamp: Date.now(),
+    });
+
     console.log(`[Withdraw] Complete! l1Hash=${l1Hash}`);
     return virtualHash;
   }
@@ -969,6 +1018,16 @@ export class RpcAdapter {
 
     const virtualHash = keccak256(signedTx);
     this.txHashMapping.set(virtualHash, l1Hash);
+
+    // Record transaction
+    session.transactions.push({
+      type: 'withdraw',
+      virtualHash,
+      l1Hash,
+      amount: withdrawAmount,
+      recipient: withdrawRecipient,
+      timestamp: Date.now(),
+    });
 
     console.log(`[Withdraw] Complete (single-note)! l1Hash=${l1Hash}`);
     return virtualHash;
@@ -1096,6 +1155,7 @@ export class RpcAdapter {
     // 1. Scan deposit events and try to decrypt
     const { getDepositEvents, getTransferEvents, getWithdrawEvents } = await import('./sync.js');
     const deposits = await getDepositEvents();
+    const recoveredTransactions: TransactionRecord[] = [];
 
     for (const dep of deposits) {
       if (dep.encryptedNote && dep.encryptedNote.length > 2) {
@@ -1111,6 +1171,14 @@ export class RpcAdapter {
               noteStore.addNote(note);
               recoveredCount++;
             }
+            // Record deposit transaction (regardless of spent status)
+            recoveredTransactions.push({
+              type: 'deposit',
+              virtualHash: dep.txHash,
+              l1Hash: dep.txHash,
+              amount: noteData.amount,
+              timestamp: Number(dep.blockNumber),
+            });
           }
         }
       }
@@ -1118,6 +1186,7 @@ export class RpcAdapter {
 
     // 2. Scan transfer events for received notes
     const transfers = await getTransferEvents();
+    const seenTransferTxs = new Set<string>();
 
     for (const xfer of transfers) {
       // Try to decrypt both encrypted notes
@@ -1135,6 +1204,18 @@ export class RpcAdapter {
                 noteStore.addNote(note);
                 recoveredCount++;
               }
+              // Record transfer transaction (only once per tx)
+              if (!seenTransferTxs.has(xfer.txHash)) {
+                seenTransferTxs.add(xfer.txHash);
+                // If index 0 is ours, we received; if index 1 is ours, it's change (we sent)
+                recoveredTransactions.push({
+                  type: 'transfer',
+                  virtualHash: xfer.txHash,
+                  l1Hash: xfer.txHash,
+                  amount: noteData.amount,
+                  timestamp: Number(xfer.blockNumber),
+                });
+              }
             }
           }
         }
@@ -1145,9 +1226,14 @@ export class RpcAdapter {
     const withdrawals = await getWithdrawEvents();
 
     for (const w of withdrawals) {
+      // Check if this withdrawal is ours (either by change note or recipient address)
+      let isOurs = false;
+      let withdrawAmount = w.amount;
+
       if (w.encryptedChange && w.encryptedChange.length > 2 && w.changeCommitment !== 0n) {
         const noteData = decryptNoteData(encryptionPrivKey, w.encryptedChange);
         if (noteData && noteData.owner === userOwner) {
+          isOurs = true;
           const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
           if (expectedCommitment === w.changeCommitment) {
             const nullifier = computeNullifier(w.changeCommitment, noteData.randomness);
@@ -1159,13 +1245,33 @@ export class RpcAdapter {
           }
         }
       }
+
+      // Also check if recipient matches
+      if (w.recipient.toLowerCase() === normalizedAddress) {
+        isOurs = true;
+      }
+
+      if (isOurs) {
+        recoveredTransactions.push({
+          type: 'withdraw',
+          virtualHash: w.txHash,
+          l1Hash: w.txHash,
+          amount: withdrawAmount,
+          recipient: w.recipient,
+          timestamp: Number(w.blockNumber),
+        });
+      }
     }
+
+    // Sort transactions by timestamp (block number)
+    recoveredTransactions.sort((a, b) => a.timestamp - b.timestamp);
 
     this.sessions.set(normalizedAddress, {
       address: normalizedAddress,
       keys: sessionKeys,
       noteStore,
       virtualNonce: 0n,
+      transactions: recoveredTransactions,
     });
 
     console.log(`[RegisterViewingKey] ${normalizedAddress}, recovered ${recoveredCount} notes`);
@@ -1199,6 +1305,158 @@ export class RpcAdapter {
     });
 
     return encrypted;
+  }
+
+  /**
+   * Get user's transaction history
+   */
+  private getTransactions(address: string): unknown {
+    const session = this.sessions.get(address.toLowerCase());
+    if (!session) {
+      return [];
+    }
+    const result = session.transactions.map((tx) => ({
+      type: tx.type,
+      virtualHash: tx.virtualHash,
+      l1Hash: tx.l1Hash,
+      amount: toHex(tx.amount),
+      recipient: tx.recipient,
+      timestamp: tx.timestamp,
+    }));
+    // Debug: log withdraw l1Hash values
+    for (const tx of result) {
+      if (tx.type === 'withdraw') {
+        console.log(`[getTransactions] withdraw l1Hash=${tx.l1Hash}`);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Force refresh session state from chain
+   */
+  private async refreshSession(address: string): Promise<boolean> {
+    const normalizedAddress = address.toLowerCase();
+    const session = this.sessions.get(normalizedAddress);
+    if (!session) {
+      throw new Error('Session not found. Register viewing key first.');
+    }
+
+    console.log(`[Refresh] Syncing state for ${normalizedAddress}...`);
+
+    // Sync global state from chain
+    await syncFromChain(this.merkleTree, this.spentNullifiers, this.usedIntents);
+
+    // Re-scan events for this user's notes
+    const { getDepositEvents, getTransferEvents, getWithdrawEvents } = await import('./sync.js');
+    const userOwner = BigInt(normalizedAddress);
+    const encryptionPrivKey = session.keys.encryptionPrivKey;
+
+    if (!encryptionPrivKey) {
+      throw new Error('Encryption key not available');
+    }
+
+    // Clear and rebuild note store
+    const newNoteStore = new NoteStore(session.keys);
+    const newTransactions: TransactionRecord[] = [];
+
+    // Scan deposits
+    const deposits = await getDepositEvents();
+    for (const dep of deposits) {
+      if (dep.encryptedNote && dep.encryptedNote.length > 2) {
+        const noteData = decryptNoteData(encryptionPrivKey, dep.encryptedNote);
+        if (noteData && noteData.owner === userOwner) {
+          const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
+          if (expectedCommitment === dep.commitment) {
+            const nullifier = computeNullifier(dep.commitment, noteData.randomness);
+            if (!this.spentNullifiers.has(nullifier)) {
+              const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, dep.leafIndex);
+              newNoteStore.addNote(note);
+            }
+            newTransactions.push({
+              type: 'deposit',
+              virtualHash: dep.txHash,
+              l1Hash: dep.txHash,
+              amount: noteData.amount,
+              timestamp: Number(dep.blockNumber),
+            });
+          }
+        }
+      }
+    }
+
+    // Scan transfers
+    const transfers = await getTransferEvents();
+    const seenTransferTxs = new Set<string>();
+    for (const xfer of transfers) {
+      for (let i = 0; i < 2; i++) {
+        const encNote = xfer.encryptedNotes[i];
+        if (encNote && encNote.length > 2) {
+          const noteData = decryptNoteData(encryptionPrivKey, encNote);
+          if (noteData && noteData.owner === userOwner) {
+            const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
+            if (expectedCommitment === xfer.commitments[i]) {
+              const nullifier = computeNullifier(xfer.commitments[i], noteData.randomness);
+              if (!this.spentNullifiers.has(nullifier)) {
+                const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, xfer.leafIndices[i]);
+                newNoteStore.addNote(note);
+              }
+              if (!seenTransferTxs.has(xfer.txHash)) {
+                seenTransferTxs.add(xfer.txHash);
+                newTransactions.push({
+                  type: 'transfer',
+                  virtualHash: xfer.txHash,
+                  l1Hash: xfer.txHash,
+                  amount: noteData.amount,
+                  timestamp: Number(xfer.blockNumber),
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Scan withdrawals
+    const withdrawals = await getWithdrawEvents();
+    for (const w of withdrawals) {
+      let isOurs = false;
+      if (w.encryptedChange && w.encryptedChange.length > 2 && w.changeCommitment !== 0n) {
+        const noteData = decryptNoteData(encryptionPrivKey, w.encryptedChange);
+        if (noteData && noteData.owner === userOwner) {
+          isOurs = true;
+          const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
+          if (expectedCommitment === w.changeCommitment) {
+            const nullifier = computeNullifier(w.changeCommitment, noteData.randomness);
+            if (!this.spentNullifiers.has(nullifier)) {
+              const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, w.changeLeafIndex);
+              newNoteStore.addNote(note);
+            }
+          }
+        }
+      }
+      if (w.recipient.toLowerCase() === normalizedAddress) {
+        isOurs = true;
+      }
+      if (isOurs) {
+        newTransactions.push({
+          type: 'withdraw',
+          virtualHash: w.txHash,
+          l1Hash: w.txHash,
+          amount: w.amount,
+          recipient: w.recipient,
+          timestamp: Number(w.blockNumber),
+        });
+      }
+    }
+
+    // Sort transactions and update session
+    newTransactions.sort((a, b) => a.timestamp - b.timestamp);
+    session.noteStore = newNoteStore;
+    session.transactions = newTransactions;
+
+    console.log(`[Refresh] Complete! ${newNoteStore.getAllNotes().length} notes, ${newTransactions.length} transactions`);
+    return true;
   }
 
   /**
@@ -1255,6 +1513,15 @@ export class RpcAdapter {
                   const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, dep.leafIndex);
                   session.noteStore.addNote(note);
                   console.log(`[WatchForDeposit] Added note: ${noteData.amount} wei`);
+
+                  // Record deposit transaction
+                  session.transactions.push({
+                    type: 'deposit',
+                    virtualHash: txHash,
+                    l1Hash: txHash,
+                    amount: noteData.amount,
+                    timestamp: Date.now(),
+                  });
                 }
               }
             }
