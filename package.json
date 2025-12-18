@@ -1,0 +1,11 @@
+{
+  "name": "facet-private-demo",
+  "private": true,
+  "scripts": {
+    "postinstall": "cd adapter && npm install",
+    "build": "cd adapter && npm run build"
+  },
+  "engines": {
+    "node": "20.x"
+  }
+}

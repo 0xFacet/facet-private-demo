@@ -15,8 +15,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 
-# Noir circuits
-circuits/*/target/
+# Noir circuits (keep compiled JSON for deployment)
+circuits/*/target/*
+!circuits/*/target/*.json
 
 # Logs
 *.log
