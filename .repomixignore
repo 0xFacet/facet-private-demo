@@ -1,2 +1,4 @@
 contracts/lib/**
 contracts/verifiers/**
+*.svg
+CLAIMABLE_TRANSFER_PLAN.md

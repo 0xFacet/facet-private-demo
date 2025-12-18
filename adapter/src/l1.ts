@@ -56,8 +56,9 @@ export const PRIVACY_POOL_ABI = [
     type: 'function',
     stateMutability: 'payable',
     inputs: [
-      { name: 'owner', type: 'uint256' },
+      { name: 'noteOwner', type: 'uint256' },
       { name: 'randomness', type: 'uint256' },
+      { name: 'nullifierKeyHash', type: 'uint256' },
       { name: 'encryptedNote', type: 'bytes' },
     ],
     outputs: [],
@@ -203,12 +204,14 @@ export async function isRootKnown(root: bigint): Promise<boolean> {
  * Submit a deposit to L1
  * @param owner The recipient's address as a field element
  * @param randomness Random value for commitment uniqueness
+ * @param nullifierKeyHash Hash of recipient's nullifier key (binds note to their key)
  * @param amount Amount of ETH to deposit (in wei)
  * @param encryptedNote Optional encrypted note data
  */
 export async function submitDeposit(
   owner: bigint,
   randomness: bigint,
+  nullifierKeyHash: bigint,
   amount: bigint,
   encryptedNote: Hex = '0x'
 ): Promise<Hex> {
@@ -220,7 +223,7 @@ export async function submitDeposit(
     address: CONTRACTS.privacyPool as Hex,
     abi: PRIVACY_POOL_ABI,
     functionName: 'deposit',
-    args: [owner, randomness, encryptedNote],
+    args: [owner, randomness, nullifierKeyHash, encryptedNote],
     value: amount,
   });
 
@@ -381,6 +384,7 @@ const REGISTRY_ABI = [
     inputs: [
       { name: 'user', type: 'address' },
       { name: 'pkEnc', type: 'bytes' },
+      { name: 'nullifierKeyHash', type: 'uint256' },
     ],
     outputs: [],
   },
@@ -392,6 +396,13 @@ const REGISTRY_ABI = [
     outputs: [{ name: '', type: 'bytes' }],
   },
   {
+    name: 'getNullifierKeyHash',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'user', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
     name: 'isRegistered',
     type: 'function',
     stateMutability: 'view',
@@ -401,9 +412,12 @@ const REGISTRY_ABI = [
 ] as const;
 
 /**
- * Register encryption public key in registry (33-byte compressed secp256k1 key)
+ * Register encryption public key and nullifier key hash in registry
+ * @param user Address to register
+ * @param pkEnc 33-byte compressed secp256k1 encryption public key
+ * @param nullifierKeyHash Hash of user's nullifier key (poseidon(nullifierKey, 1))
  */
-export async function registerEncryptionKey(user: Hex, pkEnc: Hex): Promise<Hex> {
+export async function registerEncryptionKey(user: Hex, pkEnc: Hex, nullifierKeyHash: bigint): Promise<Hex> {
   if (!relayer) {
     throw new Error('Relayer not configured');
   }
@@ -412,7 +426,7 @@ export async function registerEncryptionKey(user: Hex, pkEnc: Hex): Promise<Hex>
     address: CONTRACTS.registry as Hex,
     abi: REGISTRY_ABI,
     functionName: 'register',
-    args: [user, pkEnc],
+    args: [user, pkEnc, nullifierKeyHash],
   });
 
   console.log(`[L1] Registry register submitted: ${hash}`);
@@ -434,6 +448,21 @@ export async function getEncryptionKey(user: Hex): Promise<Hex | null> {
     return null;
   }
   return result;
+}
+
+/**
+ * Get nullifier key hash from registry
+ * @param user Address to look up
+ * @returns Nullifier key hash (0n if not registered)
+ */
+export async function getNullifierKeyHash(user: Hex): Promise<bigint> {
+  const result = await l1Public.readContract({
+    address: CONTRACTS.registry as Hex,
+    abi: REGISTRY_ABI,
+    functionName: 'getNullifierKeyHash',
+    args: [user],
+  });
+  return result as bigint;
 }
 
 /**

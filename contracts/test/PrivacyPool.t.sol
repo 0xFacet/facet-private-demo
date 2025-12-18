@@ -7,6 +7,7 @@ import {RecipientRegistry} from "../src/RecipientRegistry.sol";
 import {MockVerifier} from "../src/MockVerifier.sol";
 import {PoseidonT3} from "poseidon-solidity/PoseidonT3.sol";
 import {PoseidonT4} from "poseidon-solidity/PoseidonT4.sol";
+import {PoseidonT5} from "poseidon-solidity/PoseidonT5.sol";
 
 contract PrivacyPoolTest is Test {
     PrivacyPool public pool;
@@ -15,6 +16,10 @@ contract PrivacyPoolTest is Test {
 
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
+
+    // Sample nullifier key hashes for testing
+    uint256 aliceNkHash = 12345678901234567890;
+    uint256 bobNkHash = 98765432109876543210;
 
     function setUp() public {
         registry = new RecipientRegistry();
@@ -33,34 +38,35 @@ contract PrivacyPoolTest is Test {
         bytes memory pkEnc = abi.encodePacked(bytes1(0x02), bytes32(uint256(123456)));
 
         // World-writable: anyone can register for anyone
-        registry.register(alice, pkEnc);
+        registry.register(alice, pkEnc, aliceNkHash);
 
         assertTrue(registry.isRegistered(alice));
         assertEq(keccak256(registry.getEncryptionKey(alice)), keccak256(pkEnc));
+        assertEq(registry.getNullifierKeyHash(alice), aliceNkHash);
     }
 
     function test_Registry_CannotRegisterTwice() public {
         bytes memory pkEnc1 = abi.encodePacked(bytes1(0x02), bytes32(uint256(123456)));
         bytes memory pkEnc2 = abi.encodePacked(bytes1(0x03), bytes32(uint256(789012)));
 
-        registry.register(alice, pkEnc1);
+        registry.register(alice, pkEnc1, aliceNkHash);
 
         vm.expectRevert("Already registered");
-        registry.register(alice, pkEnc2);
+        registry.register(alice, pkEnc2, aliceNkHash);
     }
 
     function test_Registry_CannotRegisterInvalidLength() public {
         bytes memory invalidKey = abi.encodePacked(bytes32(uint256(123456))); // 32 bytes, not 33
 
         vm.expectRevert("Invalid public key length");
-        registry.register(alice, invalidKey);
+        registry.register(alice, invalidKey, aliceNkHash);
     }
 
     function test_Registry_CannotRegisterInvalidPrefix() public {
         bytes memory invalidKey = abi.encodePacked(bytes1(0x04), bytes32(uint256(123456))); // invalid prefix
 
         vm.expectRevert("Invalid public key prefix");
-        registry.register(alice, invalidKey);
+        registry.register(alice, invalidKey, aliceNkHash);
     }
 
     // ==================== Pool Initialization Tests ====================
@@ -86,7 +92,7 @@ contract PrivacyPoolTest is Test {
     // ==================== Deposit Tests ====================
 
     function test_Deposit_Basic() public {
-        // New deposit signature: deposit(owner, randomness, encryptedNote)
+        // New deposit signature: deposit(owner, randomness, nullifierKeyHash, encryptedNote)
         // Contract computes commitment on-chain from msg.value
         uint256 amount = 1 ether;
         uint256 owner = uint256(uint160(alice));
@@ -95,7 +101,7 @@ contract PrivacyPoolTest is Test {
         bytes memory encryptedNote = abi.encode(amount, randomness);
 
         vm.prank(alice);
-        pool.deposit{value: amount}(owner, randomness, encryptedNote);
+        pool.deposit{value: amount}(owner, randomness, aliceNkHash, encryptedNote);
 
         // Check leaf was inserted
         assertEq(pool.nextLeafIndex(), 1);
@@ -108,11 +114,11 @@ contract PrivacyPoolTest is Test {
     function test_Deposit_MultipleDeposits() public {
         // First deposit
         vm.prank(alice);
-        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 111, "");
+        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 111, aliceNkHash, "");
 
         // Second deposit
         vm.prank(bob);
-        pool.deposit{value: 2 ether}(uint256(uint160(bob)), 222, "");
+        pool.deposit{value: 2 ether}(uint256(uint160(bob)), 222, bobNkHash, "");
 
         assertEq(pool.nextLeafIndex(), 2);
         assertEq(address(pool).balance, 3 ether);
@@ -121,13 +127,13 @@ contract PrivacyPoolTest is Test {
     function test_Deposit_RevertZeroOwner() public {
         vm.prank(alice);
         vm.expectRevert(PrivacyPool.InvalidOwner.selector);
-        pool.deposit{value: 1 ether}(0, 12345, "");
+        pool.deposit{value: 1 ether}(0, 12345, aliceNkHash, "");
     }
 
     function test_Deposit_RevertZeroValue() public {
         vm.prank(alice);
         vm.expectRevert(PrivacyPool.InvalidAmount.selector);
-        pool.deposit{value: 0}(uint256(uint160(alice)), 12345, "");
+        pool.deposit{value: 0}(uint256(uint160(alice)), 12345, aliceNkHash, "");
     }
 
     function test_Deposit_CommitmentComputedOnChain() public {
@@ -138,9 +144,9 @@ contract PrivacyPoolTest is Test {
         uint256 randomness = 12345;
 
         vm.prank(alice);
-        pool.deposit{value: amount}(owner, randomness, "");
+        pool.deposit{value: amount}(owner, randomness, aliceNkHash, "");
 
-        // The commitment stored in the tree should be poseidon(amount, owner, randomness)
+        // The commitment stored in the tree should be poseidon(amount, owner, randomness, nullifierKeyHash)
         // computed using the actual msg.value (1 ether), not any attacker-supplied value
         // This prevents fake-amount attacks
         assertEq(pool.nextLeafIndex(), 1);
@@ -151,16 +157,16 @@ contract PrivacyPoolTest is Test {
     function test_Transfer_WithMockVerifier() public {
         // Setup: deposit twice so we have 2 notes
         vm.startPrank(alice);
-        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 111, "");
-        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 222, "");
+        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 111, aliceNkHash, "");
+        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 222, aliceNkHash, "");
         vm.stopPrank();
 
         // Get current root
         uint256 merkleRoot = pool.getLastRoot();
 
         // Create output commitments
-        uint256 output1 = _computeCommitment(0.5 ether, uint256(uint160(bob)), 333);
-        uint256 output2 = _computeCommitment(1.5 ether, uint256(uint160(alice)), 444);
+        uint256 output1 = _computeCommitment(0.5 ether, uint256(uint160(bob)), 333, bobNkHash);
+        uint256 output2 = _computeCommitment(1.5 ether, uint256(uint160(alice)), 444, aliceNkHash);
 
         // Create nullifiers (would be poseidon(commitment, nullifierKey) in reality)
         uint256[2] memory nullifiers = [uint256(1), uint256(2)];
@@ -191,8 +197,8 @@ contract PrivacyPoolTest is Test {
     function test_Transfer_RevertDoubleSpend() public {
         // Setup deposits
         vm.startPrank(alice);
-        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 111, "");
-        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 222, "");
+        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 111, aliceNkHash, "");
+        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 222, aliceNkHash, "");
         vm.stopPrank();
 
         uint256 merkleRoot = pool.getLastRoot();
@@ -213,13 +219,13 @@ contract PrivacyPoolTest is Test {
     function test_Withdraw_WithMockVerifier() public {
         // Setup: deposit
         vm.startPrank(alice);
-        pool.deposit{value: 2 ether}(uint256(uint160(alice)), 111, "");
-        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 222, "");
+        pool.deposit{value: 2 ether}(uint256(uint160(alice)), 111, aliceNkHash, "");
+        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 222, aliceNkHash, "");
         vm.stopPrank();
 
         uint256 merkleRoot = pool.getLastRoot();
         uint256[2] memory nullifiers = [uint256(10), uint256(20)];
-        uint256 changeCommitment = _computeCommitment(1 ether, uint256(uint160(alice)), 555);
+        uint256 changeCommitment = _computeCommitment(1 ether, uint256(uint160(alice)), 555, aliceNkHash);
 
         uint256 bobBalanceBefore = bob.balance;
 
@@ -266,12 +272,11 @@ contract PrivacyPoolTest is Test {
 
     function _computeCommitment(
         uint256 amount,
-        uint256 recipient,
-        uint256 randomness
+        uint256 owner,
+        uint256 randomness,
+        uint256 nullifierKeyHash
     ) internal pure returns (uint256) {
-        // Note: In the real implementation, this would use PoseidonT4 for 3 inputs
-        // For testing, we'll use a simple hash
-        uint256 FIELD_SIZE = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
-        return uint256(keccak256(abi.encode(amount, recipient, randomness))) % FIELD_SIZE;
+        // Use PoseidonT5 for 4 inputs: (amount, owner, randomness, nullifierKeyHash)
+        return PoseidonT5.hash([amount, owner, randomness, nullifierKeyHash]);
     }
 }

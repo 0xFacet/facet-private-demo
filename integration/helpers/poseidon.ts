@@ -36,9 +36,18 @@ export function poseidon2(inputs: [bigint, bigint]): bigint {
 
 /**
  * Hash 3 field elements (equivalent to PoseidonT4 in Solidity)
- * Used for note commitments: poseidon(amount, owner, randomness)
  */
 export function poseidon3(inputs: [bigint, bigint, bigint]): bigint {
+  const poseidon = getPoseidon();
+  const result = poseidon(inputs);
+  return BigInt(poseidon.F.toString(result));
+}
+
+/**
+ * Hash 4 field elements (equivalent to PoseidonT5 in Solidity)
+ * Used for note commitments: poseidon(amount, owner, randomness, nullifierKeyHash)
+ */
+export function poseidon4(inputs: [bigint, bigint, bigint, bigint]): bigint {
   const poseidon = getPoseidon();
   const result = poseidon(inputs);
   return BigInt(poseidon.F.toString(result));
@@ -54,21 +63,34 @@ export function poseidon5(inputs: [bigint, bigint, bigint, bigint, bigint]): big
   return BigInt(poseidon.F.toString(result));
 }
 
+// Domain separator for nullifier key hash computation (must match circuit constant)
+const NULLIFIER_KEY_DOMAIN = 1n;
+
+/**
+ * Compute the nullifier key hash from a nullifier key
+ * nullifierKeyHash = poseidon(nullifierKey, DOMAIN)
+ * This is stored in the registry and bound to note commitments
+ */
+export function computeNullifierKeyHash(nullifierKey: bigint): bigint {
+  return poseidon2([nullifierKey, NULLIFIER_KEY_DOMAIN]);
+}
+
 /**
  * Compute a note commitment
- * commitment = poseidon(amount, ownerAddress, randomness)
+ * commitment = poseidon(amount, ownerAddress, randomness, nullifierKeyHash)
+ * The nullifierKeyHash binds the note to a specific nullifier key for spending
  */
-export function computeCommitment(amount: bigint, owner: bigint, randomness: bigint): bigint {
-  return poseidon3([amount, owner, randomness]);
+export function computeCommitment(amount: bigint, owner: bigint, randomness: bigint, nullifierKeyHash: bigint): bigint {
+  return poseidon4([amount, owner, randomness, nullifierKeyHash]);
 }
 
 /**
  * Compute a nullifier for a note
- * nullifier = poseidon(commitment, randomness)
- * Randomness is already committed in the note, making nullifiers deterministic per note
+ * nullifier = poseidon(commitment, nullifierKey)
+ * nullifierKey is bound to the commitment via nullifierKeyHash, making nullifiers deterministic per note
  */
-export function computeNullifier(commitment: bigint, randomness: bigint): bigint {
-  return poseidon2([commitment, randomness]);
+export function computeNullifier(commitment: bigint, nullifierKey: bigint): bigint {
+  return poseidon2([commitment, nullifierKey]);
 }
 
 /**

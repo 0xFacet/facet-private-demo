@@ -27,7 +27,8 @@ export interface Note {
 export interface SessionKeys {
   address: string; // Ethereum address
   viewingKey: Uint8Array; // For decryption
-  nullifierKey: bigint; // For computing nullifiers
+  nullifierKey: bigint; // For computing nullifiers (private, never broadcast)
+  nullifierKeyHash: bigint; // Hash of nullifierKey, stored in registry and bound to commitments
   encryptionPubKey: Uint8Array; // Public key for ECIES (33 bytes compressed)
   encryptionPrivKey?: Uint8Array; // Private key for ECIES decryption (32 bytes)
 }
@@ -116,9 +117,10 @@ export class NoteStore {
 
   /**
    * Compute the nullifier for a note
+   * Uses the session's nullifierKey (bound to commitment via nullifierKeyHash)
    */
   computeNoteNullifier(note: Note): bigint {
-    return computeNullifier(note.commitment, note.randomness);
+    return computeNullifier(note.commitment, this.sessionKeys.nullifierKey);
   }
 
   /**
@@ -131,14 +133,15 @@ export class NoteStore {
 
 /**
  * Create a new note
+ * @param nullifierKeyHash Hash of the owner's nullifier key (bound to commitment)
  */
-export function createNote(amount: bigint, owner: bigint, leafIndex: number): Note {
+export function createNote(amount: bigint, owner: bigint, nullifierKeyHash: bigint, leafIndex: number): Note {
   // Generate random value for commitment
   const randomBytes = new Uint8Array(32);
   crypto.getRandomValues(randomBytes);
   const randomness = bytesToBigInt(randomBytes) % FIELD_SIZE;
 
-  const commitment = computeCommitment(amount, owner, randomness);
+  const commitment = computeCommitment(amount, owner, randomness, nullifierKeyHash);
 
   return {
     amount,
@@ -152,14 +155,16 @@ export function createNote(amount: bigint, owner: bigint, leafIndex: number): No
 
 /**
  * Create a note with specific randomness (for deterministic testing)
+ * @param nullifierKeyHash Hash of the owner's nullifier key (bound to commitment)
  */
 export function createNoteWithRandomness(
   amount: bigint,
   owner: bigint,
   randomness: bigint,
+  nullifierKeyHash: bigint,
   leafIndex: number
 ): Note {
-  const commitment = computeCommitment(amount, owner, randomness);
+  const commitment = computeCommitment(amount, owner, randomness, nullifierKeyHash);
 
   return {
     amount,
@@ -192,8 +197,8 @@ export function tryDecryptNote(
 
     const owner = BigInt(sessionKeys.address);
 
-    // Verify commitment matches
-    const expectedCommitment = computeCommitment(amount, owner, randomness);
+    // Verify commitment matches (using session's nullifierKeyHash)
+    const expectedCommitment = computeCommitment(amount, owner, randomness, sessionKeys.nullifierKeyHash);
     if (expectedCommitment !== commitment) {
       return null; // Not our note
     }

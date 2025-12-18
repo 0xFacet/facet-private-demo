@@ -26,7 +26,7 @@ import {
 } from './config.js';
 import { NoteStore, SessionKeys, createNoteWithRandomness, type Note } from './notes.js';
 import { MerkleTree } from './merkle.js';
-import { initPoseidon, computeCommitment, computeNullifier, computeIntentNullifier, computeWithdrawIntentNullifier } from './crypto/poseidon.js';
+import { initPoseidon, computeCommitment, computeNullifier, computeNullifierKeyHash, computeIntentNullifier, computeWithdrawIntentNullifier } from './crypto/poseidon.js';
 import { deriveEncryptionKeypair, encryptNoteData, decryptNoteData, pubKeyToHex, hexToPubKey } from './crypto/ecies.js';
 import {
   l1Public,
@@ -37,6 +37,7 @@ import {
   getRelayerAddress,
   registerEncryptionKey,
   getEncryptionKey,
+  getNullifierKeyHash as getRegistryNullifierKeyHash,
   isUserRegistered,
   parseDepositLeafIndex,
   parseTransferLeafIndices,
@@ -262,6 +263,9 @@ export class RpcAdapter {
       case 'privacy_getEncryptionKey':
         return this.getEncryptionKey(params[0] as string);
 
+      case 'privacy_getNullifierKeyHash':
+        return this.getNullifierKeyHashRpc(params[0] as string);
+
       case 'privacy_getTransactions':
         return this.getTransactions(params[0] as string);
 
@@ -480,12 +484,16 @@ export class RpcAdapter {
     const recipient = parsed.to as Hex;
     const txNonce = parsed.nonce ?? 0;
 
-    // Look up recipient's encryption public key from Registry
+    // Look up recipient's encryption public key and nullifier key hash from Registry
     const recipientPkBytes32 = await getEncryptionKey(recipient);
     if (!recipientPkBytes32) {
       throw new Error(`Recipient ${recipient} is not registered. They must register a viewing key first.`);
     }
     const recipientPubKey = hexToPubKey(recipientPkBytes32);
+    const recipientNullifierKeyHash = await getRegistryNullifierKeyHash(recipient);
+    if (recipientNullifierKeyHash === 0n) {
+      throw new Error(`Recipient ${recipient} nullifier key hash not found in registry.`);
+    }
 
     const totalInput = notes[0].amount + notes[1].amount;
     const change = totalInput - value;
@@ -494,19 +502,19 @@ export class RpcAdapter {
     const proof0 = this.merkleTree.generateProof(notes[0].leafIndex);
     const proof1 = this.merkleTree.generateProof(notes[1].leafIndex);
 
-    // Compute nullifiers (using note randomness, which is committed)
-    const nullifier0 = computeNullifier(notes[0].commitment, notes[0].randomness);
-    const nullifier1 = computeNullifier(notes[1].commitment, notes[1].randomness);
+    // Compute nullifiers (using session's nullifierKey, which is bound to commitment via nkHash)
+    const nullifier0 = computeNullifier(notes[0].commitment, session.keys.nullifierKey);
+    const nullifier1 = computeNullifier(notes[1].commitment, session.keys.nullifierKey);
 
-    // Output 0: to recipient
+    // Output 0: to recipient (uses recipient's nullifierKeyHash)
     const output0Owner = BigInt(recipient);
     const output0Randomness = BigInt(keccak256(concat([signedTx, '0x00']))) % FIELD_SIZE;
-    const output0Commitment = computeCommitment(value, output0Owner, output0Randomness);
+    const output0Commitment = computeCommitment(value, output0Owner, output0Randomness, recipientNullifierKeyHash);
 
-    // Output 1: change back to sender
+    // Output 1: change back to sender (uses sender's nullifierKeyHash)
     const output1Owner = BigInt(senderAddress);
     const output1Randomness = BigInt(keccak256(concat([signedTx, '0x01']))) % FIELD_SIZE;
-    const output1Commitment = computeCommitment(change, output1Owner, output1Randomness);
+    const output1Commitment = computeCommitment(change, output1Owner, output1Randomness, session.keys.nullifierKeyHash);
 
     // Intent nullifier = poseidon(signer, chainId, nonce, to, value)
     const intentNullifier = computeIntentNullifier(
@@ -557,6 +565,8 @@ export class RpcAdapter {
       output0Randomness,
       output1Amount: change,
       output1Randomness,
+      nullifierKey: session.keys.nullifierKey,
+      output0NullifierKeyHash: recipientNullifierKeyHash,
     };
 
     console.log('[Transfer] Generating proof...');
@@ -597,7 +607,7 @@ export class RpcAdapter {
 
     // Add change note back to sender's store
     if (change > 0n) {
-      const changeNote = createNoteWithRandomness(change, output1Owner, output1Randomness, leafIndex1);
+      const changeNote = createNoteWithRandomness(change, output1Owner, output1Randomness, session.keys.nullifierKeyHash, leafIndex1);
       session.noteStore.addNote(changeNote);
     }
 
@@ -634,34 +644,38 @@ export class RpcAdapter {
 
     console.log('[Transfer] Using single-note with phantom input');
 
-    // Look up recipient's encryption public key from Registry
+    // Look up recipient's encryption public key and nullifier key hash from Registry
     const recipientPkBytes32 = await getEncryptionKey(recipient);
     if (!recipientPkBytes32) {
       throw new Error(`Recipient ${recipient} is not registered. They must register a viewing key first.`);
     }
     const recipientPubKey = hexToPubKey(recipientPkBytes32);
+    const recipientNullifierKeyHash = await getRegistryNullifierKeyHash(recipient);
+    if (recipientNullifierKeyHash === 0n) {
+      throw new Error(`Recipient ${recipient} nullifier key hash not found in registry.`);
+    }
 
     const change = note.amount - value;
 
     // Real note (input 0)
     const proof0 = this.merkleTree.generateProof(note.leafIndex);
-    const nullifier0 = computeNullifier(note.commitment, note.randomness);
+    const nullifier0 = computeNullifier(note.commitment, session.keys.nullifierKey);
 
     // Phantom note (input 1) - amount=0 skips merkle verification in circuit
     // Derive unique randomness from signed tx to prevent nullifier collision
     const phantomRandomness = BigInt(keccak256(concat([signedTx, '0xff']))) % FIELD_SIZE;
-    const phantomCommitment = computeCommitment(0n, BigInt(senderAddress), phantomRandomness);
-    const nullifier1 = computeNullifier(phantomCommitment, phantomRandomness);
+    const phantomCommitment = computeCommitment(0n, BigInt(senderAddress), phantomRandomness, session.keys.nullifierKeyHash);
+    const nullifier1 = computeNullifier(phantomCommitment, session.keys.nullifierKey);
 
-    // Output 0: to recipient
+    // Output 0: to recipient (uses recipient's nullifierKeyHash)
     const output0Owner = BigInt(recipient);
     const output0Randomness = BigInt(keccak256(concat([signedTx, '0x00']))) % FIELD_SIZE;
-    const output0Commitment = computeCommitment(value, output0Owner, output0Randomness);
+    const output0Commitment = computeCommitment(value, output0Owner, output0Randomness, recipientNullifierKeyHash);
 
-    // Output 1: change back to sender
+    // Output 1: change back to sender (uses sender's nullifierKeyHash)
     const output1Owner = BigInt(senderAddress);
     const output1Randomness = BigInt(keccak256(concat([signedTx, '0x01']))) % FIELD_SIZE;
-    const output1Commitment = computeCommitment(change, output1Owner, output1Randomness);
+    const output1Commitment = computeCommitment(change, output1Owner, output1Randomness, session.keys.nullifierKeyHash);
 
     // Intent nullifier
     const intentNullifier = computeIntentNullifier(
@@ -713,6 +727,8 @@ export class RpcAdapter {
       output0Randomness,
       output1Amount: change,
       output1Randomness,
+      nullifierKey: session.keys.nullifierKey,
+      output0NullifierKeyHash: recipientNullifierKeyHash,
     };
 
     console.log('[Transfer] Generating proof (single-note)...');
@@ -750,7 +766,7 @@ export class RpcAdapter {
 
     // Add change note back to sender's store
     if (change > 0n) {
-      const changeNote = createNoteWithRandomness(change, output1Owner, output1Randomness, leafIndex1);
+      const changeNote = createNoteWithRandomness(change, output1Owner, output1Randomness, session.keys.nullifierKeyHash, leafIndex1);
       session.noteStore.addNote(changeNote);
     }
 
@@ -820,15 +836,15 @@ export class RpcAdapter {
     const proof0 = this.merkleTree.generateProof(note0.leafIndex);
     const proof1 = this.merkleTree.generateProof(note1.leafIndex);
 
-    // Nullifiers (using note randomness, which is committed)
-    const nullifier0 = computeNullifier(note0.commitment, note0.randomness);
-    const nullifier1 = computeNullifier(note1.commitment, note1.randomness);
+    // Nullifiers (using session's nullifierKey, bound to commitment via nkHash)
+    const nullifier0 = computeNullifier(note0.commitment, session.keys.nullifierKey);
+    const nullifier1 = computeNullifier(note1.commitment, session.keys.nullifierKey);
 
-    // Change commitment
+    // Change commitment (uses sender's nullifierKeyHash)
     const changeOwner = BigInt(senderAddress);
     const changeRandomness = BigInt(keccak256(concat([signedTx, '0x02']))) % FIELD_SIZE;
     const changeCommitment =
-      changeAmount > 0n ? computeCommitment(changeAmount, changeOwner, changeRandomness) : 0n;
+      changeAmount > 0n ? computeCommitment(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash) : 0n;
 
     // Intent nullifier = poseidon(signer, chainId, nonce, WITHDRAW_SENTINEL, value)
     const intentNullifier = computeWithdrawIntentNullifier(
@@ -873,6 +889,7 @@ export class RpcAdapter {
       },
       changeAmount,
       changeRandomness,
+      nullifierKey: session.keys.nullifierKey,
     };
 
     console.log('[Withdraw] Generating proof...');
@@ -908,7 +925,7 @@ export class RpcAdapter {
     session.noteStore.markSpent(note1.commitment);
 
     if (changeCommitment !== 0n) {
-      const changeNote = createNoteWithRandomness(changeAmount, changeOwner, changeRandomness, leafIndex);
+      const changeNote = createNoteWithRandomness(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash, leafIndex);
       session.noteStore.addNote(changeNote);
     }
 
@@ -948,18 +965,18 @@ export class RpcAdapter {
 
     // Real note (input 0)
     const proof0 = this.merkleTree.generateProof(note.leafIndex);
-    const nullifier0 = computeNullifier(note.commitment, note.randomness);
+    const nullifier0 = computeNullifier(note.commitment, session.keys.nullifierKey);
 
     // Phantom note (input 1) - amount=0 skips merkle verification in circuit
     const phantomRandomness = BigInt(keccak256(concat([signedTx, '0xff']))) % FIELD_SIZE;
-    const phantomCommitment = computeCommitment(0n, BigInt(senderAddress), phantomRandomness);
-    const nullifier1 = computeNullifier(phantomCommitment, phantomRandomness);
+    const phantomCommitment = computeCommitment(0n, BigInt(senderAddress), phantomRandomness, session.keys.nullifierKeyHash);
+    const nullifier1 = computeNullifier(phantomCommitment, session.keys.nullifierKey);
 
-    // Change commitment
+    // Change commitment (uses sender's nullifierKeyHash)
     const changeOwner = BigInt(senderAddress);
     const changeRandomness = BigInt(keccak256(concat([signedTx, '0x02']))) % FIELD_SIZE;
     const changeCommitment =
-      changeAmount > 0n ? computeCommitment(changeAmount, changeOwner, changeRandomness) : 0n;
+      changeAmount > 0n ? computeCommitment(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash) : 0n;
 
     // Intent nullifier
     const intentNullifier = computeWithdrawIntentNullifier(
@@ -1005,6 +1022,7 @@ export class RpcAdapter {
       },
       changeAmount,
       changeRandomness,
+      nullifierKey: session.keys.nullifierKey,
     };
 
     console.log('[Withdraw] Generating proof (single-note)...');
@@ -1039,7 +1057,7 @@ export class RpcAdapter {
     session.noteStore.markSpent(note.commitment);
 
     if (changeCommitment !== 0n) {
-      const changeNote = createNoteWithRandomness(changeAmount, changeOwner, changeRandomness, leafIndex);
+      const changeNote = createNoteWithRandomness(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash, leafIndex);
       session.noteStore.addNote(changeNote);
     }
 
@@ -1150,10 +1168,12 @@ export class RpcAdapter {
 
     // Derive keys from signature (deterministic)
     const viewingKeyHash = keccak256(signature as Hex);
-    const nullifierKeyHash = keccak256(concat([signature as Hex, '0x01']));
+    const nullifierKeySeed = keccak256(concat([signature as Hex, '0x01']));
 
     const viewingKey = hexToBytes(viewingKeyHash);
-    const nullifierKey = BigInt(nullifierKeyHash) % FIELD_SIZE;
+    const nullifierKey = BigInt(nullifierKeySeed) % FIELD_SIZE;
+    // Compute nullifierKeyHash = poseidon(nullifierKey, DOMAIN) for registry storage
+    const nullifierKeyHash = computeNullifierKeyHash(nullifierKey);
 
     // Derive encryption keypair (for ECIES)
     const { privateKey: encryptionPrivKey, publicKey: encryptionPubKey } = deriveEncryptionKeypair(signature as Hex);
@@ -1162,18 +1182,19 @@ export class RpcAdapter {
       address: normalizedAddress,
       viewingKey,
       nullifierKey,
+      nullifierKeyHash,
       encryptionPubKey,
       encryptionPrivKey, // Store private key for decryption
     };
 
     const noteStore = new NoteStore(sessionKeys);
 
-    // Register encryption public key in Registry if not already registered
+    // Register encryption public key and nullifier key hash in Registry if not already registered
     const isRegistered = await isUserRegistered(normalizedAddress as Hex);
     if (!isRegistered) {
-      console.log(`[RegisterViewingKey] Registering encryption key in Registry...`);
+      console.log(`[RegisterViewingKey] Registering encryption key and nullifierKeyHash in Registry...`);
       const pkHex = pubKeyToHex(encryptionPubKey);
-      const regHash = await registerEncryptionKey(normalizedAddress as Hex, pkHex);
+      const regHash = await registerEncryptionKey(normalizedAddress as Hex, pkHex, nullifierKeyHash);
       await waitForReceipt(regHash);
     }
 
@@ -1191,12 +1212,12 @@ export class RpcAdapter {
         // Try to decrypt with our private key
         const noteData = decryptNoteData(encryptionPrivKey, dep.encryptedNote);
         if (noteData && noteData.owner === userOwner) {
-          // Verify commitment
-          const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
+          // Verify commitment (uses our nullifierKeyHash)
+          const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness, nullifierKeyHash);
           if (expectedCommitment === dep.commitment) {
-            const nullifier = computeNullifier(dep.commitment, noteData.randomness);
+            const nullifier = computeNullifier(dep.commitment, nullifierKey);
             if (!this.spentNullifiers.has(nullifier)) {
-              const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, dep.leafIndex);
+              const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, nullifierKeyHash, dep.leafIndex);
               noteStore.addNote(note);
               recoveredCount++;
             }
@@ -1225,7 +1246,7 @@ export class RpcAdapter {
         if (encNote && encNote.length > 2) {
           const noteData = decryptNoteData(encryptionPrivKey, encNote);
           if (noteData && noteData.owner === userOwner) {
-            const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
+            const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness, nullifierKeyHash);
             if (expectedCommitment === xfer.commitments[i]) {
               decryptedNotes.push({
                 index: i,
@@ -1241,9 +1262,9 @@ export class RpcAdapter {
 
       // Add unspent notes to store
       for (const dn of decryptedNotes) {
-        const nullifier = computeNullifier(dn.commitment, dn.randomness);
+        const nullifier = computeNullifier(dn.commitment, nullifierKey);
         if (!this.spentNullifiers.has(nullifier)) {
-          const note = createNoteWithRandomness(dn.amount, userOwner, dn.randomness, dn.leafIndex);
+          const note = createNoteWithRandomness(dn.amount, userOwner, dn.randomness, nullifierKeyHash, dn.leafIndex);
           noteStore.addNote(note);
           recoveredCount++;
         }
@@ -1278,11 +1299,11 @@ export class RpcAdapter {
         const noteData = decryptNoteData(encryptionPrivKey, w.encryptedChange);
         if (noteData && noteData.owner === userOwner) {
           isOurs = true;
-          const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
+          const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness, nullifierKeyHash);
           if (expectedCommitment === w.changeCommitment) {
-            const nullifier = computeNullifier(w.changeCommitment, noteData.randomness);
+            const nullifier = computeNullifier(w.changeCommitment, nullifierKey);
             if (!this.spentNullifiers.has(nullifier)) {
-              const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, w.changeLeafIndex);
+              const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, nullifierKeyHash, w.changeLeafIndex);
               noteStore.addNote(note);
               recoveredCount++;
             }
@@ -1417,11 +1438,11 @@ export class RpcAdapter {
       if (dep.encryptedNote && dep.encryptedNote.length > 2) {
         const noteData = decryptNoteData(encryptionPrivKey, dep.encryptedNote);
         if (noteData && noteData.owner === userOwner) {
-          const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
+          const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness, session.keys.nullifierKeyHash);
           if (expectedCommitment === dep.commitment) {
-            const nullifier = computeNullifier(dep.commitment, noteData.randomness);
+            const nullifier = computeNullifier(dep.commitment, session.keys.nullifierKey);
             if (!this.spentNullifiers.has(nullifier)) {
-              const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, dep.leafIndex);
+              const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, session.keys.nullifierKeyHash, dep.leafIndex);
               newNoteStore.addNote(note);
             }
             newTransactions.push({
@@ -1447,7 +1468,7 @@ export class RpcAdapter {
         if (encNote && encNote.length > 2) {
           const noteData = decryptNoteData(encryptionPrivKey, encNote);
           if (noteData && noteData.owner === userOwner) {
-            const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
+            const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness, session.keys.nullifierKeyHash);
             if (expectedCommitment === xfer.commitments[i]) {
               decryptedNotes.push({
                 index: i,
@@ -1463,9 +1484,9 @@ export class RpcAdapter {
 
       // Add unspent notes to store
       for (const dn of decryptedNotes) {
-        const nullifier = computeNullifier(dn.commitment, dn.randomness);
+        const nullifier = computeNullifier(dn.commitment, session.keys.nullifierKey);
         if (!this.spentNullifiers.has(nullifier)) {
-          const note = createNoteWithRandomness(dn.amount, userOwner, dn.randomness, dn.leafIndex);
+          const note = createNoteWithRandomness(dn.amount, userOwner, dn.randomness, session.keys.nullifierKeyHash, dn.leafIndex);
           newNoteStore.addNote(note);
         }
       }
@@ -1494,11 +1515,11 @@ export class RpcAdapter {
         const noteData = decryptNoteData(encryptionPrivKey, w.encryptedChange);
         if (noteData && noteData.owner === userOwner) {
           isOurs = true;
-          const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
+          const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness, session.keys.nullifierKeyHash);
           if (expectedCommitment === w.changeCommitment) {
-            const nullifier = computeNullifier(w.changeCommitment, noteData.randomness);
+            const nullifier = computeNullifier(w.changeCommitment, session.keys.nullifierKey);
             if (!this.spentNullifiers.has(nullifier)) {
-              const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, w.changeLeafIndex);
+              const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, session.keys.nullifierKeyHash, w.changeLeafIndex);
               newNoteStore.addNote(note);
             }
           }
@@ -1544,6 +1565,22 @@ export class RpcAdapter {
   }
 
   /**
+   * Get user's nullifier key hash (for deposits to others)
+   */
+  private async getNullifierKeyHashRpc(address: string): Promise<Hex> {
+    const normalizedAddress = address.toLowerCase();
+    const session = this.sessions.get(normalizedAddress);
+    if (session) {
+      // Return from session if available
+      return toHex(session.keys.nullifierKeyHash);
+    }
+
+    // Otherwise get from registry
+    const hash = await getRegistryNullifierKeyHash(normalizedAddress as Hex);
+    return toHex(hash);
+  }
+
+  /**
    * Watch for a deposit transaction and sync notes
    * Called after user submits deposit tx on L1
    */
@@ -1571,15 +1608,15 @@ export class RpcAdapter {
         if (dep.encryptedNote && dep.encryptedNote.length > 2) {
           const noteData = decryptNoteData(encryptionPrivKey, dep.encryptedNote);
           if (noteData && noteData.owner === userOwner) {
-            const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness);
+            const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness, session.keys.nullifierKeyHash);
             if (expectedCommitment === dep.commitment) {
               // Check if we already have this note
               const existingNotes = session.noteStore.getAllNotes();
               const alreadyHave = existingNotes.some(n => n.commitment === dep.commitment);
               if (!alreadyHave) {
-                const nullifier = computeNullifier(dep.commitment, noteData.randomness);
+                const nullifier = computeNullifier(dep.commitment, session.keys.nullifierKey);
                 if (!this.spentNullifiers.has(nullifier)) {
-                  const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, dep.leafIndex);
+                  const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, session.keys.nullifierKeyHash, dep.leafIndex);
                   session.noteStore.addNote(note);
                   console.log(`[WatchForDeposit] Added note: ${noteData.amount} wei`);
 

@@ -5,6 +5,7 @@ import {IVerifier} from "./IVerifier.sol";
 import {RecipientRegistry} from "./RecipientRegistry.sol";
 import {PoseidonT3} from "poseidon-solidity/PoseidonT3.sol";
 import {PoseidonT4} from "poseidon-solidity/PoseidonT4.sol";
+import {PoseidonT5} from "poseidon-solidity/PoseidonT5.sol";
 import {PoseidonT6} from "poseidon-solidity/PoseidonT6.sol";
 
 /// @title PrivacyPool
@@ -83,6 +84,7 @@ contract PrivacyPool {
     error InvalidAmount();
     error InvalidOwner();
     error InvalidRandomness();
+    error InvalidNullifierKeyHash();
     error InvalidProof();
     error UnknownRoot();
     error NullifierAlreadySpent();
@@ -133,17 +135,19 @@ contract PrivacyPool {
     /// @notice Deposit ETH and create a shielded note
     /// @param noteOwner The recipient's address as a field element
     /// @param randomness Random value for commitment uniqueness
+    /// @param nullifierKeyHash The hash of the recipient's nullifier key (binds note to their key)
     /// @param encryptedNote ECIES-encrypted note data for recipient
-    /// @dev Commitment is computed on-chain as poseidon(msg.value, noteOwner, randomness)
-    ///      to prevent fake-amount attacks where attacker deposits 1 wei but claims 1 ETH
-    function deposit(uint256 noteOwner, uint256 randomness, bytes calldata encryptedNote) external payable {
+    /// @dev Commitment is computed on-chain as poseidon(msg.value, noteOwner, randomness, nullifierKeyHash)
+    ///      to prevent fake-amount attacks and bind the note to a specific nullifier key
+    function deposit(uint256 noteOwner, uint256 randomness, uint256 nullifierKeyHash, bytes calldata encryptedNote) external payable {
         if (msg.value == 0 || msg.value >= FIELD_SIZE) revert InvalidAmount();
         if (noteOwner == 0 || noteOwner >= FIELD_SIZE) revert InvalidOwner();
         if (randomness == 0 || randomness >= FIELD_SIZE) revert InvalidRandomness();
+        if (nullifierKeyHash == 0 || nullifierKeyHash >= FIELD_SIZE) revert InvalidNullifierKeyHash();
 
-        // Compute commitment on-chain - this is the security fix
-        // Ensures commitment always encodes the actual msg.value
-        uint256 commitment = PoseidonT4.hash([msg.value, noteOwner, randomness]);
+        // Compute 4-input commitment on-chain
+        // Includes nullifierKeyHash to bind note to recipient's nullifier key
+        uint256 commitment = PoseidonT5.hash([msg.value, noteOwner, randomness, nullifierKeyHash]);
 
         uint256 leafIndex = _insertLeaf(commitment);
 

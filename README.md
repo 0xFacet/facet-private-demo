@@ -163,6 +163,72 @@ cd ..
 cd frontend
 npm install
 cd ..
+
+# Install integration dependencies (for verifier generation)
+cd integration
+npm install
+cd ..
+```
+
+---
+
+## Development
+
+### Rebuilding Circuits (Quick)
+
+After modifying circuit code, run the rebuild script from the project root:
+
+```bash
+./scripts/rebuild-circuits.sh
+```
+
+This compiles both circuits, regenerates the Solidity verifiers, and rebuilds the contracts.
+
+### Manual Steps
+
+If you prefer to run steps individually:
+
+#### Compiling Circuits
+
+```bash
+# Compile transfer circuit
+cd circuits/transfer
+nargo compile
+# Generates: circuits/transfer/target/transfer.json
+
+# Compile withdraw circuit
+cd ../withdraw
+nargo compile
+# Generates: circuits/withdraw/target/withdraw.json
+```
+
+These JSON files contain the compiled circuit bytecode used by both the verifier generator and the adapter's proof generation.
+
+#### Regenerating Verifier Contracts
+
+After compiling circuits, regenerate the Solidity verifiers:
+
+```bash
+cd integration
+npx tsx generate-verifiers.ts
+```
+
+This generates:
+- `contracts/verifiers/TransferVerifier.sol`
+- `contracts/verifiers/WithdrawVerifier.sol`
+
+Then rebuild the contracts:
+
+```bash
+cd ../contracts
+forge build
+```
+
+### Running Contract Tests
+
+```bash
+cd contracts
+forge test
 ```
 
 ---

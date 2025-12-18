@@ -82,6 +82,11 @@ export interface TransferCircuitInputs {
 
   output1Amount: bigint;
   output1Randomness: bigint;
+
+  // Nullifier key (private - bound to commitment via nkHash)
+  nullifierKey: bigint;
+  // Recipient's nullifier key hash (for output note 0)
+  output0NullifierKeyHash: bigint;
 }
 
 /**
@@ -109,6 +114,9 @@ export interface WithdrawCircuitInputs {
 
   changeAmount: bigint;
   changeRandomness: bigint;
+
+  // Nullifier key (private - bound to commitment via nkHash)
+  nullifierKey: bigint;
 }
 
 // Cache loaded circuits to avoid reloading
@@ -204,6 +212,11 @@ export function buildTransferInputs(inputs: TransferCircuitInputs): Record<strin
     // Output note 1
     output_1_amount: inputs.output1Amount.toString(),
     output_1_randomness: toNoirField(inputs.output1Randomness),
+
+    // Nullifier key (for spending input notes and computing change commitment)
+    nullifier_key: toNoirField(inputs.nullifierKey),
+    // Recipient's nullifier key hash (for output note 0)
+    output_0_nullifier_key_hash: toNoirField(inputs.output0NullifierKeyHash),
   };
 }
 
@@ -287,6 +300,9 @@ export function buildWithdrawInputs(inputs: WithdrawCircuitInputs): Record<strin
     // Change note
     change_amount: inputs.changeAmount.toString(),
     change_randomness: toNoirField(inputs.changeRandomness),
+
+    // Nullifier key (for spending input notes and computing change commitment)
+    nullifier_key: toNoirField(inputs.nullifierKey),
   };
 }
 

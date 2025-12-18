@@ -21,6 +21,7 @@ const PRIVACY_POOL_ABI = [{
   inputs: [
     { name: 'noteOwner', type: 'uint256' },
     { name: 'randomness', type: 'uint256' },
+    { name: 'nullifierKeyHash', type: 'uint256' },
     { name: 'encryptedNote', type: 'bytes' },
   ],
   outputs: [],
@@ -353,6 +354,12 @@ function App() {
       const owner = BigInt(account!)
       const randomness = randomBigInt()
 
+      showStatus('Fetching nullifier key hash...', 'pending', 'deposit')
+
+      // Get nullifier key hash from adapter (stored in registry during registration)
+      const nkHashHex = await rpc('privacy_getNullifierKeyHash', [account]) as `0x${string}`
+      const nullifierKeyHash = BigInt(nkHashHex)
+
       showStatus('Encrypting note data...', 'pending', 'deposit')
 
       // Get encrypted note from adapter
@@ -369,7 +376,7 @@ function App() {
       const data = encodeFunctionData({
         abi: PRIVACY_POOL_ABI,
         functionName: 'deposit',
-        args: [owner, randomness, encryptedNote],
+        args: [owner, randomness, nullifierKeyHash, encryptedNote],
       })
 
       showStatus('Confirm deposit in MetaMask...', 'pending', 'deposit')

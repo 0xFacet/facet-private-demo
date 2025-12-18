@@ -9,7 +9,7 @@
 // 5. Use Poseidon hash (matches Solidity contracts)
 
 use poseidon::poseidon::bn254::hash_2;
-use poseidon::poseidon::bn254::hash_3;
+use poseidon::poseidon::bn254::hash_4;
 use poseidon::poseidon::bn254::hash_5;
 use keccak256::keccak256;
 
@@ -27,6 +27,9 @@ global CHAIN_ID: u64 = 13371337;
 // Maximum RLP encoded length for EIP-1559 tx with our fixed params
 // chainId (5) + nonce (9) + maxPriorityFee (9) + maxFee (9) + gasLimit (5) + to (21) + value (9) + data (1) + accessList (1) + list overhead (3) = ~72
 global MAX_RLP_LEN: u32 = 128;
+
+// Domain separator for nullifier key hash computation
+global NULLIFIER_KEY_DOMAIN: Field = 1;
 
 // ========================== MAIN CIRCUIT ==========================
 
@@ -73,6 +76,12 @@ fn main(
     // Output note 1 (change back to sender)
     output_1_amount: u128,
     output_1_randomness: Field,
+
+    // Nullifier key (private - used to compute nullifiers)
+    nullifier_key: Field,
+
+    // Recipient's nullifier key hash (for output_0 commitment)
+    output_0_nullifier_key_hash: Field,
 ) {
     // ========================== 1. COMPUTE SIGNING HASH ==========================
     // CRITICAL: This binds the ECDSA signature to the actual transaction fields
@@ -100,11 +109,15 @@ fn main(
 
     let signer_address = derive_eth_address(pub_key_x, pub_key_y);
 
+    // ========================== 3.5. COMPUTE SIGNER'S NULLIFIER KEY HASH ==========================
+    // This binds the nullifier key to the commitments, preventing double-spend attacks
+    let signer_nk_hash = hash_2([nullifier_key, NULLIFIER_KEY_DOMAIN]);
+
     // ========================== 4. VERIFY INPUT NOTE 0 ==========================
-    // Commitment = poseidon(amount, owner, randomness)
+    // Commitment = poseidon(amount, owner, randomness, nullifierKeyHash)
     // Owner MUST be signer (no separate witness - eliminates redundancy bug)
 
-    let commitment_0 = hash_3([input_0_amount as Field, signer_address, input_0_randomness]);
+    let commitment_0 = hash_4([input_0_amount as Field, signer_address, input_0_randomness, signer_nk_hash]);
     let root_0 = compute_merkle_root(commitment_0, input_0_leaf_index, input_0_siblings);
     assert(root_0 == merkle_root, "Input 0 merkle proof invalid");
 
@@ -116,7 +129,7 @@ fn main(
     // nullifier set bloat. Production systems should use a sentinel (nullifier_1=0)
     // pattern. Acceptable for demo since it doesn't enable value theft.
 
-    let commitment_1 = hash_3([input_1_amount as Field, signer_address, input_1_randomness]);
+    let commitment_1 = hash_4([input_1_amount as Field, signer_address, input_1_randomness, signer_nk_hash]);
 
     // Only verify merkle proof for non-phantom inputs
     if input_1_amount != 0 {
@@ -129,20 +142,20 @@ fn main(
     }
 
     // ========================== 6. VERIFY NULLIFIERS ==========================
-    // nullifier = poseidon(commitment, randomness)
-    // Randomness is already committed in the note, making nullifiers deterministic per note
+    // nullifier = poseidon(commitment, nullifier_key)
+    // nullifier_key is bound to the commitment via signer_nk_hash, making nullifiers deterministic per note
 
-    let computed_nullifier_0 = hash_2([commitment_0, input_0_randomness]);
-    let computed_nullifier_1 = hash_2([commitment_1, input_1_randomness]);
+    let computed_nullifier_0 = hash_2([commitment_0, nullifier_key]);
+    let computed_nullifier_1 = hash_2([commitment_1, nullifier_key]);
     assert(nullifier_0 == computed_nullifier_0, "Nullifier 0 mismatch");
     assert(nullifier_1 == computed_nullifier_1, "Nullifier 1 mismatch");
 
     // ========================== 7. VERIFY OUTPUT COMMITMENTS ==========================
-    // Output 0: to recipient
-    // Output 1: change back to sender
+    // Output 0: to recipient (uses recipient's nullifier key hash)
+    // Output 1: change back to sender (uses sender's nullifier key hash)
 
-    let computed_output_0 = hash_3([output_0_amount as Field, output_0_owner, output_0_randomness]);
-    let computed_output_1 = hash_3([output_1_amount as Field, signer_address, output_1_randomness]);
+    let computed_output_0 = hash_4([output_0_amount as Field, output_0_owner, output_0_randomness, output_0_nullifier_key_hash]);
+    let computed_output_1 = hash_4([output_1_amount as Field, signer_address, output_1_randomness, signer_nk_hash]);
     assert(output_commitment_0 == computed_output_0, "Output commitment 0 mismatch");
     assert(output_commitment_1 == computed_output_1, "Output commitment 1 mismatch");
 

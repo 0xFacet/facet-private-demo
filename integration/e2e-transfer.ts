@@ -31,7 +31,7 @@ import {
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
-import { initPoseidon, computeCommitment, computeNullifier, computeIntentNullifier, computeWithdrawIntentNullifier } from './helpers/poseidon.js';
+import { initPoseidon, computeCommitment, computeNullifier, computeNullifierKeyHash, computeIntentNullifier, computeWithdrawIntentNullifier } from './helpers/poseidon.js';
 import { MerkleTree } from './helpers/merkle.js';
 import { deployContracts, getContracts, DeployedContracts } from './helpers/deploy.js';
 import {
@@ -64,6 +64,7 @@ interface Note {
   amount: bigint;
   owner: bigint;
   randomness: bigint;
+  nullifierKeyHash: bigint;
   commitment: bigint;
   leafIndex: number;
 }
@@ -107,6 +108,11 @@ async function main() {
   const notes: Note[] = [];
   const depositAmount = parseEther('1');
 
+  // Generate sender's nullifier key (in production, derived from login signature)
+  const senderNullifierKey = randomBigInt();
+  const senderNullifierKeyHash = computeNullifierKeyHash(senderNullifierKey);
+  console.log(`Sender nullifier key hash: ${senderNullifierKeyHash.toString(16).slice(0, 16)}...`);
+
   // Deposit 2 notes (circuit requires 2 inputs)
   for (let i = 0; i < 2; i++) {
     const randomness = randomBigInt();
@@ -115,22 +121,23 @@ async function main() {
     console.log(`Depositing note ${i}: ${depositAmount} wei`);
 
     // Call deposit on contract - commitment is computed on-chain
-    // New signature: deposit(owner, randomness, encryptedNote)
+    // New signature: deposit(owner, randomness, nullifierKeyHash, encryptedNote)
     const depositHash = await privacyPool.write.deposit(
-      [owner, randomness, '0x'], // owner, randomness, empty encrypted note
+      [owner, randomness, senderNullifierKeyHash, '0x'], // owner, randomness, nullifierKeyHash, empty encrypted note
       { value: depositAmount }
     );
     const receipt = await publicClient.waitForTransactionReceipt({ hash: depositHash });
     console.log(`  Deposit tx: ${depositHash.slice(0, 20)}...`);
 
     // Compute commitment locally for tracking (contract computes same value)
-    const commitment = computeCommitment(depositAmount, owner, randomness);
+    const commitment = computeCommitment(depositAmount, owner, randomness, senderNullifierKeyHash);
     const leafIndex = merkleTree.insert(commitment);
 
     notes.push({
       amount: depositAmount,
       owner,
       randomness,
+      nullifierKeyHash: senderNullifierKeyHash,
       commitment,
       leafIndex,
     });
@@ -207,23 +214,28 @@ async function main() {
   const proof0 = merkleTree.generateProof(notes[0].leafIndex);
   const proof1 = merkleTree.generateProof(notes[1].leafIndex);
 
-  // Compute nullifiers (using note randomness, which is committed)
-  const nullifier0 = computeNullifier(notes[0].commitment, notes[0].randomness);
-  const nullifier1 = computeNullifier(notes[1].commitment, notes[1].randomness);
+  // Generate recipient's nullifier key (in production, would be registered in registry)
+  const recipientNullifierKey = randomBigInt();
+  const recipientNullifierKeyHash = computeNullifierKeyHash(recipientNullifierKey);
+  console.log(`Recipient nullifier key hash: ${recipientNullifierKeyHash.toString(16).slice(0, 16)}...`);
+
+  // Compute nullifiers (using sender's nullifier key, which is bound to commitment via nkHash)
+  const nullifier0 = computeNullifier(notes[0].commitment, senderNullifierKey);
+  const nullifier1 = computeNullifier(notes[1].commitment, senderNullifierKey);
   console.log(`Nullifier 0: ${nullifier0.toString(16).slice(0, 16)}...`);
   console.log(`Nullifier 1: ${nullifier1.toString(16).slice(0, 16)}...`);
 
   // Output notes
-  // Output 0: transfer amount to recipient
+  // Output 0: transfer amount to recipient (uses recipient's nullifierKeyHash)
   const output0Randomness = randomBigInt();
   const output0Owner = txTo;
   const output0Amount = transferAmount;
-  const outputCommitment0 = computeCommitment(output0Amount, output0Owner, output0Randomness);
+  const outputCommitment0 = computeCommitment(output0Amount, output0Owner, output0Randomness, recipientNullifierKeyHash);
 
-  // Output 1: change back to sender
+  // Output 1: change back to sender (uses sender's nullifierKeyHash)
   const output1Randomness = randomBigInt();
   const output1Amount = notes[0].amount + notes[1].amount - transferAmount;
-  const outputCommitment1 = computeCommitment(output1Amount, notes[0].owner, output1Randomness);
+  const outputCommitment1 = computeCommitment(output1Amount, notes[0].owner, output1Randomness, senderNullifierKeyHash);
 
   console.log(`Output 0: ${output0Amount} wei to recipient`);
   console.log(`Output 1: ${output1Amount} wei change to sender`);
@@ -277,6 +289,11 @@ async function main() {
 
     output1Amount,
     output1Randomness,
+
+    // Nullifier key (for spending input notes and computing change commitment)
+    nullifierKey: senderNullifierKey,
+    // Recipient's nullifier key hash (for output note 0)
+    output0NullifierKeyHash: recipientNullifierKeyHash,
   };
 
   // ==================== GENERATE PROOF ====================
@@ -357,6 +374,7 @@ async function main() {
     amount: output0Amount,
     owner: output0Owner,
     randomness: output0Randomness,
+    nullifierKeyHash: recipientNullifierKeyHash,
     commitment: outputCommitment0,
     leafIndex: 2, // After 2 deposits
   };
@@ -437,18 +455,18 @@ async function main() {
   // Phantom zero-input: second input has amount=0, skips merkle verification
   // We still need a commitment and nullifier, but the leaf index and siblings are ignored
   const phantomRandomness = randomBigInt();
-  const phantomCommitment = computeCommitment(0n, BigInt(recipientAccount.address), phantomRandomness);
+  const phantomCommitment = computeCommitment(0n, BigInt(recipientAccount.address), phantomRandomness, recipientNullifierKeyHash);
 
-  // Compute nullifiers (using note randomness, which is committed)
-  const withdrawNullifier0 = computeNullifier(recipientNote.commitment, recipientNote.randomness);
-  const withdrawNullifier1 = computeNullifier(phantomCommitment, phantomRandomness);
+  // Compute nullifiers (using recipient's nullifier key, which is bound to commitment via nkHash)
+  const withdrawNullifier0 = computeNullifier(recipientNote.commitment, recipientNullifierKey);
+  const withdrawNullifier1 = computeNullifier(phantomCommitment, recipientNullifierKey);
   console.log(`Nullifier 0: ${withdrawNullifier0.toString(16).slice(0, 16)}...`);
   console.log(`Nullifier 1 (phantom): ${withdrawNullifier1.toString(16).slice(0, 16)}...`);
 
   // Change note (zero change since withdrawing full amount)
   const changeAmount = 0n;
   const changeRandomness = randomBigInt();
-  const changeCommitment = computeCommitment(changeAmount, BigInt(recipientAccount.address), changeRandomness);
+  const changeCommitment = computeCommitment(changeAmount, BigInt(recipientAccount.address), changeRandomness, recipientNullifierKeyHash);
 
   // Compute withdraw intent nullifier
   const withdrawIntentNullifier = computeWithdrawIntentNullifier(
@@ -493,6 +511,9 @@ async function main() {
 
     changeAmount,
     changeRandomness,
+
+    // Nullifier key (for spending input notes and computing change commitment)
+    nullifierKey: recipientNullifierKey,
   };
 
   // ==================== GENERATE WITHDRAW PROOF ====================

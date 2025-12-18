@@ -19,7 +19,7 @@ const CONTRACTS_DIR = resolve(__dirname, '../../contracts');
 // ABIs
 export const PRIVACY_POOL_ABI = parseAbi([
   'constructor(address _transferVerifier, address _withdrawVerifier, address _registry)',
-  'function deposit(uint256 noteOwner, uint256 randomness, bytes encryptedNote) payable',
+  'function deposit(uint256 noteOwner, uint256 randomness, uint256 nullifierKeyHash, bytes encryptedNote) payable',
   'function transfer(bytes proof, uint256 merkleRoot, uint256[2] nullifiers, uint256[2] outputCommitments, uint256 intentNullifier, bytes[2] encryptedNotes)',
   'function withdraw(bytes proof, uint256 merkleRoot, uint256[2] nullifiers, uint256 changeCommitment, uint256 intentNullifier, address recipient, uint256 amount, bytes encryptedChange)',
   'function getLastRoot() view returns (uint256)',

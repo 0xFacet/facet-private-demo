@@ -9,7 +9,7 @@
 // 5. Use Poseidon hash (matches Solidity contracts)
 
 use poseidon::poseidon::bn254::hash_2;
-use poseidon::poseidon::bn254::hash_3;
+use poseidon::poseidon::bn254::hash_4;
 use poseidon::poseidon::bn254::hash_5;
 use keccak256::keccak256;
 
@@ -29,6 +29,9 @@ global MAX_RLP_LEN: u32 = 128;
 
 // Sentinel address for withdrawals - user signs tx to this address to trigger withdrawal
 global WITHDRAW_SENTINEL: Field = 1;
+
+// Domain separator for nullifier key hash computation
+global NULLIFIER_KEY_DOMAIN: Field = 1;
 
 // ========================== MAIN CIRCUIT ==========================
 
@@ -69,6 +72,9 @@ fn main(
     // Change note (stays in pool, goes back to sender)
     change_amount: u128,
     change_randomness: Field,
+
+    // Nullifier key (private - used to compute nullifiers)
+    nullifier_key: Field,
 ) {
     // ========================== 0. VALIDATE PUBLIC INPUT BOUNDS ==========================
     // withdraw_amount is a pub Field but used as u128 in value checks.
@@ -102,11 +108,15 @@ fn main(
     // Withdrawals can only go to the signer's own address (security constraint)
     assert(withdraw_recipient == signer_address, "Can only withdraw to self");
 
+    // ========================== 3.5. COMPUTE SIGNER'S NULLIFIER KEY HASH ==========================
+    // This binds the nullifier key to the commitments, preventing double-spend attacks
+    let signer_nk_hash = hash_2([nullifier_key, NULLIFIER_KEY_DOMAIN]);
+
     // ========================== 4. VERIFY INPUT NOTE 0 ==========================
-    // Commitment = poseidon(amount, owner, randomness)
+    // Commitment = poseidon(amount, owner, randomness, nullifierKeyHash)
     // Owner MUST be signer (no separate witness - eliminates redundancy bug)
 
-    let commitment_0 = hash_3([input_0_amount as Field, signer_address, input_0_randomness]);
+    let commitment_0 = hash_4([input_0_amount as Field, signer_address, input_0_randomness, signer_nk_hash]);
     let root_0 = compute_merkle_root(commitment_0, input_0_leaf_index, input_0_siblings);
     assert(root_0 == merkle_root, "Input 0 merkle proof invalid");
 
@@ -118,7 +128,7 @@ fn main(
     // nullifier set bloat. Production systems should use a sentinel (nullifier_1=0)
     // pattern. Acceptable for demo since it doesn't enable value theft.
 
-    let commitment_1 = hash_3([input_1_amount as Field, signer_address, input_1_randomness]);
+    let commitment_1 = hash_4([input_1_amount as Field, signer_address, input_1_randomness, signer_nk_hash]);
 
     // Only verify merkle proof for non-phantom inputs
     if input_1_amount != 0 {
@@ -131,18 +141,18 @@ fn main(
     }
 
     // ========================== 6. VERIFY NULLIFIERS ==========================
-    // nullifier = poseidon(commitment, randomness)
-    // Randomness is already committed in the note, making nullifiers deterministic per note
+    // nullifier = poseidon(commitment, nullifier_key)
+    // nullifier_key is bound to the commitment via signer_nk_hash, making nullifiers deterministic per note
 
-    let computed_nullifier_0 = hash_2([commitment_0, input_0_randomness]);
-    let computed_nullifier_1 = hash_2([commitment_1, input_1_randomness]);
+    let computed_nullifier_0 = hash_2([commitment_0, nullifier_key]);
+    let computed_nullifier_1 = hash_2([commitment_1, nullifier_key]);
     assert(nullifier_0 == computed_nullifier_0, "Nullifier 0 mismatch");
     assert(nullifier_1 == computed_nullifier_1, "Nullifier 1 mismatch");
 
     // ========================== 7. VERIFY CHANGE COMMITMENT ==========================
-    // Change goes back to signer
+    // Change goes back to signer (includes signer's nullifierKeyHash for spending)
 
-    let computed_change = hash_3([change_amount as Field, signer_address, change_randomness]);
+    let computed_change = hash_4([change_amount as Field, signer_address, change_randomness, signer_nk_hash]);
     assert(change_commitment == computed_change, "Change commitment mismatch");
 
     // ========================== 8. VALUE CONSERVATION ==========================

@@ -3,7 +3,12 @@
   "private": true,
   "scripts": {
     "postinstall": "cd adapter && npm install --include=dev",
-    "build": "cd adapter && npm run build"
+    "build": "cd adapter && npm run build",
+    "test": "./scripts/test-all.sh",
+    "test:fast": "./scripts/test-all.sh --skip-e2e",
+    "test:e2e": "./scripts/test-all.sh --e2e-only",
+    "test:rebuild": "./scripts/test-all.sh --rebuild",
+    "rebuild-circuits": "./scripts/rebuild-circuits.sh"
   },
   "engines": {
     "node": "20.x"
