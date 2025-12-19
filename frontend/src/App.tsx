@@ -431,34 +431,58 @@ function App() {
       await switchToNetwork(VIRTUAL_CHAIN_ID, true)
 
       const weiAmount = '0x' + parseEther(transferAmount).toString(16)
-      // Start timing before MetaMask - the proof generation happens during the RPC call
-      setProofStartTime(Date.now())
-      showStatus('Confirm in MetaMask, then wait for proof generation...', 'pending', 'transfer')
+      showStatus('Confirm in MetaMask...', 'pending', 'transfer')
 
       const txHash = await window.ethereum!.request({
         method: 'eth_sendTransaction',
         params: [{ from: account, to: transferTo, value: weiAmount }],
       }) as string
 
-      showStatus('Submitting proof to L1...', 'pending', 'transfer')
+      // Transaction submitted - now poll for status
+      // The RPC returns immediately, proof generation happens in background
+      setProofStartTime(Date.now())
+      showStatus('Generating zero-knowledge proof...', 'pending', 'transfer')
 
-      let receipt = null
-      while (!receipt) {
+      let attempts = 0
+      let unknownCount = 0
+      const maxAttempts = 60 // ~3 minutes at 3s intervals
+      let txStatus: { status: string; l1Hash?: string; error?: string } = { status: 'proving' }
+
+      while (txStatus.status !== 'complete' && txStatus.status !== 'failed') {
+        if (++attempts > maxAttempts) {
+          throw new Error('Transaction timed out. Please check your balance and try again.')
+        }
         await new Promise(r => setTimeout(r, 3000))
-        receipt = await rpc('eth_getTransactionReceipt', [txHash])
+        txStatus = await rpc('privacy_getTransactionStatus', [txHash]) as typeof txStatus
+
+        // Handle unknown status (transaction may have been lost)
+        if (txStatus.status === 'unknown') {
+          unknownCount++
+          if (unknownCount > 3) {
+            throw new Error('Transaction not found. It may have failed during submission.')
+          }
+        } else {
+          unknownCount = 0 // Reset on valid status
+        }
+
+        // Update UI based on status
+        if (txStatus.status === 'proving') {
+          showStatus('Generating zero-knowledge proof...', 'pending', 'transfer')
+        } else if (txStatus.status === 'submitting') {
+          showStatus('Submitting proof to L1...', 'pending', 'transfer')
+        }
       }
 
-      // Get the L1 tx hash from the receipt or transactions
+      if (txStatus.status === 'failed') {
+        throw new Error(txStatus.error || 'Transaction failed')
+      }
+
+      // Success
       await Promise.all([updateBalance(), updateNotes(), updateTransactions()])
       setTransferTo('')
       setTransferAmount('')
 
-      // Find the L1 hash from the latest transaction (last in array)
-      const txList = await rpc('privacy_getTransactions', [account]) as Transaction[]
-      const latestTransfer = txList.filter(t => t.type === 'transfer' || t.type === 'transfer_out').pop()
-      const l1Hash = latestTransfer?.l1Hash
-
-      showStatus('Transfer complete!', 'success', 'transfer', l1Hash)
+      showStatus('Transfer complete!', 'success', 'transfer', txStatus.l1Hash)
     } catch (e) {
       setLoading(null)
       showStatus((e as Error).message, 'error', 'transfer')
@@ -479,32 +503,57 @@ function App() {
       await switchToNetwork(VIRTUAL_CHAIN_ID, true)
 
       const weiAmount = '0x' + parseEther(withdrawAmount).toString(16)
-      // Start timing before MetaMask - the proof generation happens during the RPC call
-      setProofStartTime(Date.now())
-      showStatus('Confirm in MetaMask, then wait for proof generation...', 'pending', 'withdraw')
+      showStatus('Confirm in MetaMask...', 'pending', 'withdraw')
 
       const txHash = await window.ethereum!.request({
         method: 'eth_sendTransaction',
         params: [{ from: account, to: WITHDRAW_SENTINEL, value: weiAmount }],
       }) as string
 
-      showStatus('Submitting proof to L1...', 'pending', 'withdraw')
+      // Transaction submitted - now poll for status
+      // The RPC returns immediately, proof generation happens in background
+      setProofStartTime(Date.now())
+      showStatus('Generating zero-knowledge proof...', 'pending', 'withdraw')
 
-      let receipt = null
-      while (!receipt) {
+      let attempts = 0
+      let unknownCount = 0
+      const maxAttempts = 60 // ~3 minutes at 3s intervals
+      let txStatus: { status: string; l1Hash?: string; error?: string } = { status: 'proving' }
+
+      while (txStatus.status !== 'complete' && txStatus.status !== 'failed') {
+        if (++attempts > maxAttempts) {
+          throw new Error('Transaction timed out. Please check your balance and try again.')
+        }
         await new Promise(r => setTimeout(r, 3000))
-        receipt = await rpc('eth_getTransactionReceipt', [txHash])
+        txStatus = await rpc('privacy_getTransactionStatus', [txHash]) as typeof txStatus
+
+        // Handle unknown status (transaction may have been lost)
+        if (txStatus.status === 'unknown') {
+          unknownCount++
+          if (unknownCount > 3) {
+            throw new Error('Transaction not found. It may have failed during submission.')
+          }
+        } else {
+          unknownCount = 0 // Reset on valid status
+        }
+
+        // Update UI based on status
+        if (txStatus.status === 'proving') {
+          showStatus('Generating zero-knowledge proof...', 'pending', 'withdraw')
+        } else if (txStatus.status === 'submitting') {
+          showStatus('Submitting proof to L1...', 'pending', 'withdraw')
+        }
       }
 
+      if (txStatus.status === 'failed') {
+        throw new Error(txStatus.error || 'Transaction failed')
+      }
+
+      // Success
       await Promise.all([updateBalance(), updateNotes(), updateTransactions()])
       setWithdrawAmount('')
 
-      // Find the L1 hash from the latest transaction (last in array)
-      const txList = await rpc('privacy_getTransactions', [account]) as Transaction[]
-      const latestWithdraw = txList.filter(t => t.type === 'withdraw').pop()
-      const l1Hash = latestWithdraw?.l1Hash
-
-      showStatus('Withdrawal complete! ETH sent to your wallet.', 'success', 'withdraw', l1Hash)
+      showStatus('Withdrawal complete! ETH sent to your wallet.', 'success', 'withdraw', txStatus.l1Hash)
     } catch (e) {
       setLoading(null)
       showStatus((e as Error).message, 'error', 'withdraw')

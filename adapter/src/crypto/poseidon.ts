@@ -94,29 +94,16 @@ export function computeNullifier(commitment: bigint, nullifierKey: bigint): bigi
 }
 
 /**
- * Compute an intent nullifier for transfers
- * intentNullifier = poseidon(signer, chainId, nonce, to, value)
+ * Compute an intent nullifier for transfers and withdrawals
+ * intentNullifier = poseidon(nullifierKey, chainId, nonce)
+ *
+ * Uses secret nullifier_key for privacy (prevents dictionary attacks).
+ * One nonce = one spend, regardless of tx content.
  */
 export function computeIntentNullifier(
-  signer: bigint,
+  nullifierKey: bigint,
   chainId: bigint,
-  nonce: bigint,
-  to: bigint,
-  value: bigint
+  nonce: bigint
 ): bigint {
-  return poseidon5([signer, chainId, nonce, to, value]);
-}
-
-/**
- * Compute an intent nullifier for withdrawals
- * intentNullifier = poseidon(signer, chainId, nonce, WITHDRAW_SENTINEL, value)
- */
-export function computeWithdrawIntentNullifier(
-  signer: bigint,
-  chainId: bigint,
-  nonce: bigint,
-  value: bigint
-): bigint {
-  const WITHDRAW_SENTINEL = 1n;
-  return poseidon5([signer, chainId, nonce, WITHDRAW_SENTINEL, value]);
+  return poseidon3([nullifierKey, chainId, nonce]);
 }

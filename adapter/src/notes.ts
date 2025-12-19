@@ -19,6 +19,7 @@ export interface Note {
 
   // Status
   spent: boolean;
+  reserved?: boolean; // True when note is being used in an in-flight transaction
 }
 
 /**
@@ -52,20 +53,39 @@ export class NoteStore {
   }
 
   /**
-   * Mark a note as spent by its nullifier
+   * Mark a note as spent by its commitment
    */
   markSpent(commitment: bigint): void {
     const note = this.notes.get(commitment);
     if (note) {
       note.spent = true;
+      note.reserved = false; // Clean up reservation
     }
   }
 
   /**
-   * Get all unspent notes
+   * Get all unspent notes (excludes reserved notes)
    */
   getUnspentNotes(): Note[] {
-    return Array.from(this.notes.values()).filter((n) => !n.spent);
+    return Array.from(this.notes.values()).filter((n) => !n.spent && !n.reserved);
+  }
+
+  /**
+   * Reserve notes for an in-flight transaction
+   */
+  reserveNotes(notes: Note[]): void {
+    for (const note of notes) {
+      note.reserved = true;
+    }
+  }
+
+  /**
+   * Unreserve notes (on transaction failure)
+   */
+  unreserveNotes(notes: Note[]): void {
+    for (const note of notes) {
+      note.reserved = false;
+    }
   }
 
   /**

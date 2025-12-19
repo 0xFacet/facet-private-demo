@@ -56,6 +56,7 @@ type PoolEvent = DepositEvent | TransferEvent | WithdrawEvent;
 /**
  * Sync state from chain
  * Rebuilds merkle tree and tracks spent nullifiers/intents
+ * Atomic: builds new state first, only swaps on success
  */
 export async function syncFromChain(
   merkleTree: MerkleTree,
@@ -64,32 +65,36 @@ export async function syncFromChain(
 ): Promise<void> {
   console.log('[Sync] Starting chain sync from block', DEPLOY_BLOCK.toString());
 
-  // Reset local state before rebuilding
-  merkleTree.reset();
-  spentNullifiers.clear();
-  usedIntents.clear();
+  // Build new state in temporary structures (don't touch existing until verified)
+  const tempTree = new MerkleTree();
+  const tempNullifiers = new Set<bigint>();
+  const tempIntents = new Set<bigint>();
 
   const poolAddress = CONTRACTS.privacyPool as Hex;
 
-  // Fetch all event types in parallel
+  // Pin block number to ensure consistent snapshot across all queries
+  // This prevents race conditions where new blocks land mid-sync
+  const toBlock = await l1Public.getBlockNumber();
+
+  // Fetch all event types in parallel (all at the same pinned block)
   const [depositLogs, transferLogs, withdrawLogs] = await Promise.all([
     l1Public.getLogs({
       address: poolAddress,
       event: parseAbiItem('event Deposit(uint256 indexed commitment, uint256 indexed leafIndex, uint256 amount, uint256 owner, uint256 randomness, bytes encryptedNote)'),
       fromBlock: DEPLOY_BLOCK,
-      toBlock: 'latest',
+      toBlock,
     }),
     l1Public.getLogs({
       address: poolAddress,
       event: parseAbiItem('event Transfer(uint256[2] nullifiers, uint256[2] commitments, uint256[2] leafIndices, uint256 intentNullifier, bytes[2] encryptedNotes)'),
       fromBlock: DEPLOY_BLOCK,
-      toBlock: 'latest',
+      toBlock,
     }),
     l1Public.getLogs({
       address: poolAddress,
       event: parseAbiItem('event Withdrawal(uint256[2] nullifiers, uint256 changeCommitment, uint256 changeLeafIndex, uint256 intentNullifier, address indexed recipient, uint256 amount, bytes encryptedChange)'),
       fromBlock: DEPLOY_BLOCK,
-      toBlock: 'latest',
+      toBlock,
     }),
   ]);
 
@@ -164,19 +169,19 @@ export async function syncFromChain(
     if (event.type === 'deposit') {
       commitments.push({ commitment: event.commitment, expectedIndex: event.leafIndex });
     } else if (event.type === 'transfer') {
-      // Mark nullifiers as spent
-      spentNullifiers.add(event.nullifiers[0]);
-      spentNullifiers.add(event.nullifiers[1]);
-      usedIntents.add(event.intentNullifier);
+      // Mark nullifiers as spent (in temp set)
+      tempNullifiers.add(event.nullifiers[0]);
+      tempNullifiers.add(event.nullifiers[1]);
+      tempIntents.add(event.intentNullifier);
 
       // Add output commitments
       commitments.push({ commitment: event.commitments[0], expectedIndex: event.leafIndices[0] });
       commitments.push({ commitment: event.commitments[1], expectedIndex: event.leafIndices[1] });
     } else if (event.type === 'withdraw') {
-      // Mark nullifiers as spent
-      spentNullifiers.add(event.nullifiers[0]);
-      spentNullifiers.add(event.nullifiers[1]);
-      usedIntents.add(event.intentNullifier);
+      // Mark nullifiers as spent (in temp set)
+      tempNullifiers.add(event.nullifiers[0]);
+      tempNullifiers.add(event.nullifiers[1]);
+      tempIntents.add(event.intentNullifier);
 
       // Add change commitment if non-zero
       if (event.changeCommitment !== 0n) {
@@ -185,27 +190,42 @@ export async function syncFromChain(
     }
   }
 
-  // Sort commitments by expected index and insert in order
+  // Sort commitments by expected index and insert in order (to temp tree)
   commitments.sort((a, b) => a.expectedIndex - b.expectedIndex);
 
   for (const { commitment, expectedIndex } of commitments) {
-    const actualIndex = merkleTree.insert(commitment);
+    const actualIndex = tempTree.insert(commitment);
     if (actualIndex !== expectedIndex) {
       console.warn(`[Sync] Index mismatch: expected ${expectedIndex}, got ${actualIndex}`);
     }
   }
 
-  // Verify root matches contract
-  const localRoot = merkleTree.getRoot();
-  const contractRoot = await getContractRoot();
+  // Verify temp tree root matches contract (at the same pinned block)
+  const tempRoot = tempTree.getRoot();
+  const contractRoot = await getContractRoot(toBlock);
 
-  if (localRoot === contractRoot) {
-    console.log(`[Sync] Complete! ${merkleTree.leafCount} leaves, root matches contract`);
-  } else {
-    console.error(`[Sync] WARNING: Root mismatch!`);
-    console.error(`  Local:    ${localRoot.toString(16)}`);
+  if (tempRoot !== contractRoot) {
+    console.error(`[Sync] WARNING: Root mismatch! Keeping existing state.`);
+    console.error(`  Computed: ${tempRoot.toString(16)}`);
     console.error(`  Contract: ${contractRoot.toString(16)}`);
+    return; // Don't update - keep existing state
   }
+
+  // Root verified! Now swap data atomically
+  // IMPORTANT: This section has no await statements, making it atomic in Node.js's
+  // single-threaded event loop. No other code can interleave during this swap.
+  merkleTree.reset();
+  spentNullifiers.clear();
+  usedIntents.clear();
+
+  for (const { commitment } of commitments) {
+    merkleTree.insert(commitment);
+  }
+  for (const n of tempNullifiers) spentNullifiers.add(n);
+  for (const i of tempIntents) usedIntents.add(i);
+  // End of atomic section
+
+  console.log(`[Sync] Complete! ${merkleTree.leafCount} leaves, root matches contract`);
 }
 
 /**
@@ -225,24 +245,27 @@ export async function getEventsSinceBlock(fromBlock: bigint): Promise<PoolEvent[
   const poolAddress = CONTRACTS.privacyPool as Hex;
   const events: PoolEvent[] = [];
 
+  // Pin block number for consistent snapshot across all queries
+  const toBlock = await l1Public.getBlockNumber();
+
   const [depositLogs, transferLogs, withdrawLogs] = await Promise.all([
     l1Public.getLogs({
       address: poolAddress,
       event: parseAbiItem('event Deposit(uint256 indexed commitment, uint256 indexed leafIndex, uint256 amount, uint256 owner, uint256 randomness, bytes encryptedNote)'),
       fromBlock,
-      toBlock: 'latest',
+      toBlock,
     }),
     l1Public.getLogs({
       address: poolAddress,
       event: parseAbiItem('event Transfer(uint256[2] nullifiers, uint256[2] commitments, uint256[2] leafIndices, uint256 intentNullifier, bytes[2] encryptedNotes)'),
       fromBlock,
-      toBlock: 'latest',
+      toBlock,
     }),
     l1Public.getLogs({
       address: poolAddress,
       event: parseAbiItem('event Withdrawal(uint256[2] nullifiers, uint256 changeCommitment, uint256 changeLeafIndex, uint256 intentNullifier, address indexed recipient, uint256 amount, bytes encryptedChange)'),
       fromBlock,
-      toBlock: 'latest',
+      toBlock,
     }),
   ]);
 
