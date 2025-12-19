@@ -31,7 +31,7 @@ import {
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
-import { initPoseidon, computeCommitment, computeNullifier, computeNullifierKeyHash, computeIntentNullifier, computeWithdrawIntentNullifier } from './helpers/poseidon.js';
+import { initPoseidon, computeCommitment, computeNullifier, computeNullifierKeyHash, computeIntentNullifier } from './helpers/poseidon.js';
 import { MerkleTree } from './helpers/merkle.js';
 import { deployContracts, getContracts, DeployedContracts } from './helpers/deploy.js';
 import {
@@ -240,14 +240,11 @@ async function main() {
   console.log(`Output 0: ${output0Amount} wei to recipient`);
   console.log(`Output 1: ${output1Amount} wei change to sender`);
 
-  // Compute intent nullifier
-  const signerAddress = BigInt(account.address);
+  // Compute intent nullifier = poseidon(nullifierKey, chainId, nonce)
   const intentNullifier = computeIntentNullifier(
-    signerAddress,
+    senderNullifierKey,
     VIRTUAL_CHAIN_ID,
-    txNonce,
-    txTo,
-    txValue
+    txNonce
   );
   console.log(`Intent nullifier: ${intentNullifier.toString(16).slice(0, 16)}...`);
 
@@ -468,12 +465,11 @@ async function main() {
   const changeRandomness = randomBigInt();
   const changeCommitment = computeCommitment(changeAmount, BigInt(recipientAccount.address), changeRandomness, recipientNullifierKeyHash);
 
-  // Compute withdraw intent nullifier
-  const withdrawIntentNullifier = computeWithdrawIntentNullifier(
-    BigInt(recipientAccount.address),
+  // Compute withdraw intent nullifier = poseidon(nullifierKey, chainId, nonce)
+  const withdrawIntentNullifier = computeIntentNullifier(
+    recipientNullifierKey,
     VIRTUAL_CHAIN_ID,
-    withdrawNonce,
-    withdrawAmount
+    withdrawNonce
   );
   console.log(`Withdraw intent nullifier: ${withdrawIntentNullifier.toString(16).slice(0, 16)}...`);
 

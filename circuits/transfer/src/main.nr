@@ -9,8 +9,8 @@
 // 5. Use Poseidon hash (matches Solidity contracts)
 
 use poseidon::poseidon::bn254::hash_2;
+use poseidon::poseidon::bn254::hash_3;
 use poseidon::poseidon::bn254::hash_4;
-use poseidon::poseidon::bn254::hash_5;
 use keccak256::keccak256;
 
 // ========================== CONSTANTS ==========================
@@ -174,15 +174,14 @@ fn main(
     assert(output_0_amount == tx_value, "Amount doesn't match tx.value");
 
     // ========================== 10. INTENT NULLIFIER ==========================
-    // Replay protection: hash(signer, chainId, nonce, to, value)
-    // Prevents same intent from being used twice
+    // Replay protection: hash(nullifier_key, chainId, nonce)
+    // Uses secret nullifier_key for privacy (prevents dictionary attacks)
+    // One nonce = one spend, regardless of tx content
 
-    let computed_intent = hash_5([
-        signer_address,
+    let computed_intent = hash_3([
+        nullifier_key,
         VIRTUAL_CHAIN_ID,
-        tx_nonce as Field,
-        tx_to,
-        tx_value as Field
+        tx_nonce as Field
     ]);
     assert(intent_nullifier == computed_intent, "Intent nullifier mismatch");
 }

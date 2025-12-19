@@ -26,7 +26,7 @@ import {
 } from './config.js';
 import { NoteStore, SessionKeys, createNoteWithRandomness, type Note } from './notes.js';
 import { MerkleTree } from './merkle.js';
-import { initPoseidon, computeCommitment, computeNullifier, computeNullifierKeyHash, computeIntentNullifier, computeWithdrawIntentNullifier } from './crypto/poseidon.js';
+import { initPoseidon, computeCommitment, computeNullifier, computeNullifierKeyHash, computeIntentNullifier } from './crypto/poseidon.js';
 import { deriveEncryptionKeypair, encryptNoteData, decryptNoteData, pubKeyToHex, hexToPubKey } from './crypto/ecies.js';
 import {
   l1Public,
@@ -83,8 +83,18 @@ interface UserSession {
   address: string;
   keys: SessionKeys;
   noteStore: NoteStore;
-  virtualNonce: bigint;
   transactions: TransactionRecord[];
+  txInFlight: boolean;  // Prevents concurrent transactions
+}
+
+/**
+ * Pending transaction status for async processing
+ */
+interface PendingTransaction {
+  status: 'proving' | 'submitting' | 'complete' | 'failed';
+  l1Hash?: string;
+  error?: string;
+  reservedNotes?: Note[]; // For cleanup on failure
 }
 
 /**
@@ -108,6 +118,7 @@ export class RpcAdapter {
   private usedIntents: Set<bigint> = new Set();
   private txHashMapping: Map<string, string> = new Map(); // virtual -> L1
   private inFlightTx: Map<string, Promise<string>> = new Map(); // signed tx -> pending result
+  private pendingTxs: Map<string, PendingTransaction> = new Map(); // virtualHash -> status
   private initialized = false;
 
   constructor() {
@@ -133,6 +144,21 @@ export class RpcAdapter {
 
     this.initialized = true;
     console.log('[RpcAdapter] Initialization complete');
+  }
+
+  /**
+   * Derive next available nonce by scanning for first unused intent.
+   * Uses in-memory usedIntents set (synced from chain via syncFromChain).
+   * Fast: O(n) in-memory lookups instead of n network calls.
+   */
+  private recoverNonce(nullifierKey: bigint): bigint {
+    for (let n = 0n; n < 10000n; n++) {
+      const intent = computeIntentNullifier(nullifierKey, VIRTUAL_CHAIN_ID, n);
+      if (!this.usedIntents.has(intent)) {
+        return n;
+      }
+    }
+    throw new Error('Nonce recovery exceeded limit (10000 transactions)');
   }
 
   private setupRoutes() {
@@ -275,6 +301,9 @@ export class RpcAdapter {
       case 'privacy_hasSession':
         return this.sessions.has((params[0] as string).toLowerCase());
 
+      case 'privacy_getTransactionStatus':
+        return this.getTransactionStatus(params[0] as string);
+
       default:
         throw new Error(`Method ${method} not supported`);
     }
@@ -317,7 +346,8 @@ export class RpcAdapter {
     if (!session) {
       return '0x0';
     }
-    return toHex(session.virtualNonce);
+    // Use recoverNonce for authoritative nonce (computed from usedIntents)
+    return toHex(this.recoverNonce(session.keys.nullifierKey));
   }
 
   private getNotes(address: string): unknown {
@@ -330,39 +360,23 @@ export class RpcAdapter {
       commitment: toHex(n.commitment),
       leafIndex: n.leafIndex,
       spent: n.spent,
+      reserved: n.reserved || false,
     }));
   }
 
   // ==================== Transaction Methods ====================
 
-  private async sendRawTransaction(signedTx: string): Promise<string> {
-    // Check for duplicate in-flight transaction
-    const existing = this.inFlightTx.get(signedTx);
-    if (existing) {
-      console.log('[RPC] Duplicate transaction detected, returning existing result');
-      return existing;
-    }
-
-    // Create promise for this transaction and track it
-    const txPromise = this.processTransaction(signedTx);
-    this.inFlightTx.set(signedTx, txPromise);
-
-    try {
-      const result = await txPromise;
-      return result;
-    } finally {
-      // Clean up after completion (success or failure)
-      this.inFlightTx.delete(signedTx);
-    }
-  }
-
-  private async processTransaction(signedTx: string): Promise<string> {
-    // Check if chain needs refresh before processing
-    if (await needsRefresh(this.merkleTree)) {
-      console.log('[RPC] State refresh needed, syncing...');
-      await syncFromChain(this.merkleTree, this.spentNullifiers, this.usedIntents);
-    }
-
+  /**
+   * Validate a signed transaction (fast checks only, no proof generation)
+   */
+  private async validateTransaction(signedTx: string): Promise<{
+    parsed: ReturnType<typeof parseTransaction>;
+    session: UserSession;
+    senderAddress: Hex;
+    recoveredPubKey: Hex;
+    selectedNotes: Note[];
+    isWithdraw: boolean;
+  }> {
     // Parse the signed transaction
     const parsed = parseTransaction(signedTx as Hex);
 
@@ -371,12 +385,11 @@ export class RpcAdapter {
       throw new Error(`Invalid chain ID. Expected ${VIRTUAL_CHAIN_ID}, got ${parsed.chainId}`);
     }
 
-    // Recover sender from signature using proper EIP-1559 serialization
+    // Recover sender from signature
     if (!parsed.r || !parsed.s || parsed.yParity === undefined) {
       throw new Error('Missing signature components');
     }
 
-    // Reconstruct the unsigned transaction for hash computation
     const unsignedTx: TransactionSerializableEIP1559 = {
       chainId: Number(VIRTUAL_CHAIN_ID),
       nonce: parsed.nonce ?? 0,
@@ -391,23 +404,14 @@ export class RpcAdapter {
 
     const unsignedHash = keccak256(serializeTransaction(unsignedTx));
 
-    // Recover the public key from the signature (needed for circuit)
     const recoveredPubKey = await recoverPublicKey({
       hash: unsignedHash,
-      signature: {
-        r: parsed.r,
-        s: parsed.s,
-        yParity: parsed.yParity,
-      },
+      signature: { r: parsed.r, s: parsed.s, yParity: parsed.yParity },
     });
 
     const senderAddress = await recoverAddress({
       hash: unsignedHash,
-      signature: {
-        r: parsed.r,
-        s: parsed.s,
-        yParity: parsed.yParity,
-      },
+      signature: { r: parsed.r, s: parsed.s, yParity: parsed.yParity },
     });
 
     const normalizedSender = senderAddress.toLowerCase();
@@ -416,69 +420,271 @@ export class RpcAdapter {
       throw new Error('Session not found. Register viewing key first.');
     }
 
-    // Sync nonce - accept whatever MetaMask sends (session resets on adapter restart)
-    const txNonce = parsed.nonce ?? 0;
-    if (BigInt(txNonce) !== session.virtualNonce) {
-      console.log(`[Nonce] Syncing nonce from ${session.virtualNonce} to ${txNonce}`);
-      session.virtualNonce = BigInt(txNonce);
+    // Check tx-in-flight guard - prevents concurrent transactions
+    // Set immediately after check to prevent race condition before async operations
+    if (session.txInFlight) {
+      throw new Error('Transaction already in progress. Please wait for it to complete.');
     }
+    session.txInFlight = true;
 
-    // Route based on destination
-    const to = parsed.to?.toLowerCase();
-    const poolAddress = CONTRACTS.privacyPool.toLowerCase();
+    try {
+      // Derive expected nonce from synced state (stateless)
+      const expectedNonce = this.recoverNonce(session.keys.nullifierKey);
+      const txNonce = BigInt(parsed.nonce ?? 0);
 
-    if (to === poolAddress) {
-      // Direct deposits must be made on L1 (Sepolia), not through the virtual chain
-      throw new Error('Deposits must be made on L1 Sepolia. Switch to L1 tab to deposit.');
-    } else if (to === WITHDRAW_SENTINEL.toLowerCase()) {
-      // Withdrawal
-      return this.executeWithdraw(parsed, session, senderAddress as Hex, signedTx as Hex, recoveredPubKey);
-    } else {
-      // Private transfer
-      return this.executeTransfer(parsed, session, senderAddress as Hex, signedTx as Hex, recoveredPubKey);
+      if (txNonce !== expectedNonce) {
+        throw new Error(`Invalid nonce. Expected ${expectedNonce}, got ${txNonce}. Please refresh and retry.`);
+      }
+
+      // Route based on destination
+      const to = parsed.to?.toLowerCase();
+      const poolAddress = CONTRACTS.privacyPool.toLowerCase();
+      const isWithdraw = to === WITHDRAW_SENTINEL.toLowerCase();
+
+      if (to === poolAddress) {
+        throw new Error('Deposits must be made on L1 Sepolia. Switch to L1 tab to deposit.');
+      }
+
+      // For transfers, check recipient is registered
+      if (!isWithdraw) {
+        const recipient = parsed.to as Hex;
+        if (!recipient) {
+          throw new Error('Transfer must have a recipient');
+        }
+        const recipientPkBytes32 = await getEncryptionKey(recipient);
+        if (!recipientPkBytes32) {
+          throw new Error(`Recipient ${recipient} is not registered. They must register a viewing key first.`);
+        }
+      }
+
+      // Select and validate notes
+      const value = parsed.value || 0n;
+      const selectedNotes = session.noteStore.selectNotesForSpend(value);
+      if (!selectedNotes) {
+        const unspent = session.noteStore.getUnspentNotes();
+        const total = unspent.reduce((sum, n) => sum + n.amount, 0n);
+
+        if (total >= value && unspent.length > 2) {
+          // Have enough total but notes are fragmented (max 2 inputs per tx)
+          const sorted = [...unspent].sort((a, b) => a.amount > b.amount ? -1 : 1);
+          const maxPair = sorted.length >= 2 ? sorted[0].amount + sorted[1].amount : sorted[0]?.amount || 0n;
+          throw new Error(`Notes are fragmented. Max spendable in one tx: ${maxPair} (from 2 largest notes). Total balance: ${total}. Send a smaller amount first to consolidate notes.`);
+        }
+        throw new Error(`Insufficient balance. Have ${total}, need ${value}`);
+      }
+
+      return {
+        parsed,
+        session,
+        senderAddress: senderAddress as Hex,
+        recoveredPubKey,
+        selectedNotes,
+        isWithdraw,
+      };
+    } catch (err) {
+      // Clear tx-in-flight guard on validation error
+      session.txInFlight = false;
+      throw err;
     }
   }
 
-  // ==================== Transfer ====================
+  /**
+   * Send raw transaction - returns immediately, processes in background
+   */
+  private async sendRawTransaction(signedTx: string): Promise<string> {
+    // Compute virtualHash immediately
+    const virtualHash = keccak256(signedTx as Hex);
 
-  private async executeTransfer(
+    // Check if already processed or pending
+    if (this.txHashMapping.has(virtualHash)) {
+      console.log('[RPC] Transaction already completed, returning hash');
+      return virtualHash;
+    }
+
+    const pending = this.pendingTxs.get(virtualHash);
+    if (pending) {
+      if (pending.status === 'failed') {
+        // Allow retry - delete failed entry
+        this.pendingTxs.delete(virtualHash);
+        console.log('[RPC] Retrying previously failed transaction');
+      } else {
+        // Still proving/submitting or complete
+        console.log('[RPC] Transaction already pending, returning hash');
+        return virtualHash;
+      }
+    }
+
+    // Check for duplicate in-flight validation
+    const existing = this.inFlightTx.get(signedTx);
+    if (existing) {
+      console.log('[RPC] Duplicate transaction detected, returning existing result');
+      return existing;
+    }
+
+    // Create validation promise to prevent duplicate validation
+    const validationPromise = (async () => {
+      // Check if chain needs refresh
+      if (await needsRefresh(this.merkleTree)) {
+        console.log('[RPC] State refresh needed, syncing...');
+        await syncFromChain(this.merkleTree, this.spentNullifiers, this.usedIntents);
+      }
+
+      // Quick validation (sets txInFlight inside to prevent race)
+      const validated = await this.validateTransaction(signedTx);
+
+      // Reserve notes to prevent double-spend
+      validated.session.noteStore.reserveNotes(validated.selectedNotes);
+
+      // Mark as pending
+      this.pendingTxs.set(virtualHash, {
+        status: 'proving',
+        reservedNotes: validated.selectedNotes,
+      });
+
+      // Start background processing (don't await)
+      this.processTransactionAsync(virtualHash, signedTx as Hex, validated)
+        .catch(err => {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          console.error(`[RPC] Background tx failed: ${errorMsg}`);
+          // Cleanup on failure
+          validated.session.noteStore.unreserveNotes(validated.selectedNotes);
+          validated.session.txInFlight = false;
+          this.pendingTxs.set(virtualHash, {
+            status: 'failed',
+            error: errorMsg,
+          });
+        });
+
+      return virtualHash;
+    })();
+
+    this.inFlightTx.set(signedTx, validationPromise);
+
+    try {
+      return await validationPromise;
+    } finally {
+      this.inFlightTx.delete(signedTx);
+    }
+  }
+
+  /**
+   * Process transaction in background (proof generation + L1 submission)
+   */
+  private async processTransactionAsync(
+    virtualHash: string,
+    signedTx: Hex,
+    validated: {
+      parsed: ReturnType<typeof parseTransaction>;
+      session: UserSession;
+      senderAddress: Hex;
+      recoveredPubKey: Hex;
+      selectedNotes: Note[];
+      isWithdraw: boolean;
+    }
+  ): Promise<void> {
+    const { parsed, session, senderAddress, recoveredPubKey, selectedNotes, isWithdraw } = validated;
+
+    // No try/catch here - errors propagate to outer .catch() in sendRawTransaction
+    // Execute functions handle all local state updates (merkle, nullifiers, intents)
+    if (isWithdraw) {
+      await this.executeWithdrawAsync(parsed, session, senderAddress, signedTx, recoveredPubKey, selectedNotes, virtualHash);
+    } else {
+      await this.executeTransferAsync(parsed, session, senderAddress, signedTx, recoveredPubKey, selectedNotes, virtualHash);
+    }
+
+    // Clear tx-in-flight guard on success
+    session.txInFlight = false;
+  }
+
+  /**
+   * Get transaction status (for polling)
+   */
+  private getTransactionStatus(txHash: string): { status: string; l1Hash?: string; error?: string } {
+    const pending = this.pendingTxs.get(txHash);
+    if (pending) {
+      return {
+        status: pending.status,
+        l1Hash: pending.l1Hash,
+        error: pending.error,
+      };
+    }
+
+    if (this.txHashMapping.has(txHash)) {
+      return { status: 'complete', l1Hash: this.txHashMapping.get(txHash) };
+    }
+
+    return { status: 'unknown' };
+  }
+
+  /**
+   * Execute transfer asynchronously (notes already selected)
+   */
+  private async executeTransferAsync(
     parsed: ReturnType<typeof parseTransaction>,
     session: UserSession,
     senderAddress: Hex,
     signedTx: Hex,
-    recoveredPubKey: Hex
+    recoveredPubKey: Hex,
+    selectedNotes: Note[],
+    virtualHash: string
   ): Promise<string> {
     const value = parsed.value || 0n;
     const recipient = parsed.to as Hex;
 
-    if (!recipient) {
-      throw new Error('Transfer must have a recipient');
-    }
-
     console.log(`[Transfer] ${senderAddress} -> ${recipient}, value=${value}`);
 
-    // Select notes - can return 1 or 2 notes
-    const selectedNotes = session.noteStore.selectNotesForSpend(value);
-    if (!selectedNotes) {
-      const unspent = session.noteStore.getUnspentNotes();
-      const total = unspent.reduce((sum, n) => sum + n.amount, 0n);
-      throw new Error(`Insufficient balance. Have ${total}, need ${value}`);
-    }
-
-    // Route to single-note or two-note execution
+    // Route to single-note or two-note execution, passing notes and virtualHash
     if (selectedNotes.length === 1) {
-      return this.executeTransferSingleNote(parsed, session, senderAddress, signedTx, selectedNotes[0], recoveredPubKey);
+      return this.executeTransferSingleNoteAsync(parsed, session, senderAddress, signedTx, selectedNotes[0], recoveredPubKey, virtualHash);
     }
-    return this.executeTransferTwoNotes(parsed, session, senderAddress, signedTx, selectedNotes, recoveredPubKey);
+    return this.executeTransferTwoNotesAsync(parsed, session, senderAddress, signedTx, selectedNotes, recoveredPubKey, virtualHash);
   }
 
-  private async executeTransferTwoNotes(
+  /**
+   * Execute withdraw asynchronously (notes already selected)
+   */
+  private async executeWithdrawAsync(
+    parsed: ReturnType<typeof parseTransaction>,
+    session: UserSession,
+    senderAddress: Hex,
+    signedTx: Hex,
+    recoveredPubKey: Hex,
+    selectedNotes: Note[],
+    virtualHash: string
+  ): Promise<string> {
+    const withdrawAmount = parsed.value || 0n;
+    let withdrawRecipient: Hex;
+    if (parsed.data && parsed.data.length >= 42) {
+      withdrawRecipient = ('0x' + parsed.data.slice(2, 42)) as Hex;
+    } else {
+      withdrawRecipient = senderAddress;
+    }
+
+    console.log(`[Withdraw] ${senderAddress} withdrawing ${withdrawAmount} to ${withdrawRecipient}`);
+
+    if (selectedNotes.length === 1) {
+      return this.executeWithdrawSingleNoteAsync(
+        parsed, session, senderAddress, signedTx, selectedNotes[0],
+        recoveredPubKey, withdrawAmount, withdrawRecipient, virtualHash
+      );
+    }
+    return this.executeWithdrawTwoNotesAsync(
+      parsed, session, senderAddress, signedTx, selectedNotes,
+      recoveredPubKey, withdrawAmount, withdrawRecipient, virtualHash
+    );
+  }
+
+  /**
+   * Execute transfer with two notes (async version - updates status, returns l1Hash)
+   */
+  private async executeTransferTwoNotesAsync(
     parsed: ReturnType<typeof parseTransaction>,
     session: UserSession,
     senderAddress: Hex,
     signedTx: Hex,
     notes: Note[],
-    recoveredPubKey: Hex
+    recoveredPubKey: Hex,
+    virtualHash: string
   ): Promise<string> {
     const value = parsed.value || 0n;
     const recipient = parsed.to as Hex;
@@ -502,30 +708,29 @@ export class RpcAdapter {
     const proof0 = this.merkleTree.generateProof(notes[0].leafIndex);
     const proof1 = this.merkleTree.generateProof(notes[1].leafIndex);
 
-    // Compute nullifiers (using session's nullifierKey, which is bound to commitment via nkHash)
+    // Compute nullifiers
     const nullifier0 = computeNullifier(notes[0].commitment, session.keys.nullifierKey);
     const nullifier1 = computeNullifier(notes[1].commitment, session.keys.nullifierKey);
 
-    // Output 0: to recipient (uses recipient's nullifierKeyHash)
+    // Output 0: to recipient
     const output0Owner = BigInt(recipient);
     const output0Randomness = BigInt(keccak256(concat([signedTx, '0x00']))) % FIELD_SIZE;
     const output0Commitment = computeCommitment(value, output0Owner, output0Randomness, recipientNullifierKeyHash);
 
-    // Output 1: change back to sender (uses sender's nullifierKeyHash)
+    // Output 1: change back to sender
     const output1Owner = BigInt(senderAddress);
     const output1Randomness = BigInt(keccak256(concat([signedTx, '0x01']))) % FIELD_SIZE;
     const output1Commitment = computeCommitment(change, output1Owner, output1Randomness, session.keys.nullifierKeyHash);
 
-    // Intent nullifier = poseidon(signer, chainId, nonce, to, value)
+    // Intent nullifier
+    // Intent nullifier = poseidon(nullifierKey, chainId, nonce)
     const intentNullifier = computeIntentNullifier(
-      BigInt(senderAddress),
+      session.keys.nullifierKey,
       VIRTUAL_CHAIN_ID,
-      BigInt(txNonce),
-      BigInt(recipient),
-      value
+      BigInt(txNonce)
     );
 
-    // Extract signature data using recovered public key
+    // Extract signature data
     const signatureData = extractSignatureFromTx(
       parsed.r!,
       parsed.s!,
@@ -572,14 +777,15 @@ export class RpcAdapter {
     console.log('[Transfer] Generating proof...');
     const { proof } = await generateTransferProof(circuitInputs);
 
-    // Encrypt note data for recipient and sender
-    // Output 0: encrypted with recipient's public key
+    // Update status to submitting
+    this.pendingTxs.set(virtualHash, { status: 'submitting', reservedNotes: notes });
+
+    // Encrypt note data
     const encryptedNote0 = await encryptNoteData(recipientPubKey, {
       owner: output0Owner,
       amount: value,
       randomness: output0Randomness,
     });
-    // Output 1: encrypted with sender's public key (for change recovery)
     const encryptedNote1 = await encryptNoteData(session.keys.encryptionPubKey, {
       owner: output1Owner,
       amount: change,
@@ -598,25 +804,29 @@ export class RpcAdapter {
     const receipt = await waitForReceipt(l1Hash);
     const [leafIndex0, leafIndex1] = parseTransferLeafIndices(receipt);
 
-    // Sync merkle tree from chain to ensure consistency
-    await syncFromChain(this.merkleTree, this.spentNullifiers, this.usedIntents);
+    console.log(`[L1] Transfer confirmed: ${l1Hash}`);
 
-    // Update user's note store
+    // Mark L1 tx as confirmed immediately (so getTransactionReceipt works)
+    this.txHashMapping.set(virtualHash, l1Hash);
+    this.pendingTxs.set(virtualHash, { status: 'complete', l1Hash });
+
+    // Update merkle tree locally with new commitments (no full sync needed)
+    this.merkleTree.insert(output0Commitment);
+    this.merkleTree.insert(output1Commitment);
+    this.spentNullifiers.add(nullifier0);
+    this.spentNullifiers.add(nullifier1);
+    this.usedIntents.add(intentNullifier);
+
+    // Update notes
     session.noteStore.markSpent(notes[0].commitment);
     session.noteStore.markSpent(notes[1].commitment);
 
-    // Add change note back to sender's store
     if (change > 0n) {
       const changeNote = createNoteWithRandomness(change, output1Owner, output1Randomness, session.keys.nullifierKeyHash, leafIndex1);
       session.noteStore.addNote(changeNote);
     }
 
-    session.virtualNonce += 1n;
-
-    const virtualHash = keccak256(signedTx);
-    this.txHashMapping.set(virtualHash, l1Hash);
-
-    // Record transaction (outgoing transfer)
+    // Record transaction
     session.transactions.push({
       type: 'transfer_out',
       virtualHash,
@@ -627,16 +837,20 @@ export class RpcAdapter {
     });
 
     console.log(`[Transfer] Complete! l1Hash=${l1Hash}`);
-    return virtualHash;
+    return l1Hash;
   }
 
-  private async executeTransferSingleNote(
+  /**
+   * Execute transfer with single note (async version - updates status, returns l1Hash)
+   */
+  private async executeTransferSingleNoteAsync(
     parsed: ReturnType<typeof parseTransaction>,
     session: UserSession,
     senderAddress: Hex,
     signedTx: Hex,
     note: Note,
-    recoveredPubKey: Hex
+    recoveredPubKey: Hex,
+    virtualHash: string
   ): Promise<string> {
     const value = parsed.value || 0n;
     const recipient = parsed.to as Hex;
@@ -644,7 +858,7 @@ export class RpcAdapter {
 
     console.log('[Transfer] Using single-note with phantom input');
 
-    // Look up recipient's encryption public key and nullifier key hash from Registry
+    // Look up recipient's encryption public key and nullifier key hash
     const recipientPkBytes32 = await getEncryptionKey(recipient);
     if (!recipientPkBytes32) {
       throw new Error(`Recipient ${recipient} is not registered. They must register a viewing key first.`);
@@ -661,29 +875,27 @@ export class RpcAdapter {
     const proof0 = this.merkleTree.generateProof(note.leafIndex);
     const nullifier0 = computeNullifier(note.commitment, session.keys.nullifierKey);
 
-    // Phantom note (input 1) - amount=0 skips merkle verification in circuit
-    // Derive unique randomness from signed tx to prevent nullifier collision
+    // Phantom note (input 1)
     const phantomRandomness = BigInt(keccak256(concat([signedTx, '0xff']))) % FIELD_SIZE;
     const phantomCommitment = computeCommitment(0n, BigInt(senderAddress), phantomRandomness, session.keys.nullifierKeyHash);
     const nullifier1 = computeNullifier(phantomCommitment, session.keys.nullifierKey);
 
-    // Output 0: to recipient (uses recipient's nullifierKeyHash)
+    // Output 0: to recipient
     const output0Owner = BigInt(recipient);
     const output0Randomness = BigInt(keccak256(concat([signedTx, '0x00']))) % FIELD_SIZE;
     const output0Commitment = computeCommitment(value, output0Owner, output0Randomness, recipientNullifierKeyHash);
 
-    // Output 1: change back to sender (uses sender's nullifierKeyHash)
+    // Output 1: change back to sender
     const output1Owner = BigInt(senderAddress);
     const output1Randomness = BigInt(keccak256(concat([signedTx, '0x01']))) % FIELD_SIZE;
     const output1Commitment = computeCommitment(change, output1Owner, output1Randomness, session.keys.nullifierKeyHash);
 
     // Intent nullifier
+    // Intent nullifier = poseidon(nullifierKey, chainId, nonce)
     const intentNullifier = computeIntentNullifier(
-      BigInt(senderAddress),
+      session.keys.nullifierKey,
       VIRTUAL_CHAIN_ID,
-      BigInt(txNonce),
-      BigInt(recipient),
-      value
+      BigInt(txNonce)
     );
 
     // Extract signature data
@@ -716,7 +928,6 @@ export class RpcAdapter {
         siblings: proof0.siblings,
       },
       input1: {
-        // Phantom input - amount=0 triggers circuit to skip merkle verification
         amount: 0n,
         randomness: phantomRandomness,
         leafIndex: 0,
@@ -734,7 +945,10 @@ export class RpcAdapter {
     console.log('[Transfer] Generating proof (single-note)...');
     const { proof } = await generateTransferProof(circuitInputs);
 
-    // Encrypt note data for recipient and sender
+    // Update status to submitting
+    this.pendingTxs.set(virtualHash, { status: 'submitting', reservedNotes: [note] });
+
+    // Encrypt note data
     const encryptedNote0 = await encryptNoteData(recipientPubKey, {
       owner: output0Owner,
       amount: value,
@@ -758,24 +972,28 @@ export class RpcAdapter {
     const receipt = await waitForReceipt(l1Hash);
     const [leafIndex0, leafIndex1] = parseTransferLeafIndices(receipt);
 
-    // Sync merkle tree
-    await syncFromChain(this.merkleTree, this.spentNullifiers, this.usedIntents);
+    console.log(`[L1] Transfer confirmed: ${l1Hash}`);
 
-    // Update user's note store
+    // Mark L1 tx as confirmed immediately (so getTransactionReceipt works)
+    this.txHashMapping.set(virtualHash, l1Hash);
+    this.pendingTxs.set(virtualHash, { status: 'complete', l1Hash });
+
+    // Update merkle tree locally with new commitments (no full sync needed)
+    this.merkleTree.insert(output0Commitment);
+    this.merkleTree.insert(output1Commitment);
+    this.spentNullifiers.add(nullifier0);
+    this.spentNullifiers.add(nullifier1);
+    this.usedIntents.add(intentNullifier);
+
+    // Update notes
     session.noteStore.markSpent(note.commitment);
 
-    // Add change note back to sender's store
     if (change > 0n) {
       const changeNote = createNoteWithRandomness(change, output1Owner, output1Randomness, session.keys.nullifierKeyHash, leafIndex1);
       session.noteStore.addNote(changeNote);
     }
 
-    session.virtualNonce += 1n;
-
-    const virtualHash = keccak256(signedTx);
-    this.txHashMapping.set(virtualHash, l1Hash);
-
-    // Record transaction (outgoing transfer)
+    // Record transaction
     session.transactions.push({
       type: 'transfer_out',
       virtualHash,
@@ -786,48 +1004,24 @@ export class RpcAdapter {
     });
 
     console.log(`[Transfer] Complete (single-note)! l1Hash=${l1Hash}`);
-    return virtualHash;
+    return l1Hash;
   }
 
-  // ==================== Withdraw ====================
-
-  private async executeWithdraw(
+  /**
+   * Execute withdrawal with two notes (async version - updates status, returns l1Hash)
+   */
+  private async executeWithdrawTwoNotesAsync(
     parsed: ReturnType<typeof parseTransaction>,
     session: UserSession,
     senderAddress: Hex,
     signedTx: Hex,
-    recoveredPubKey: Hex
+    notes: Note[],
+    recoveredPubKey: Hex,
+    withdrawAmount: bigint,
+    withdrawRecipient: Hex,
+    virtualHash: string
   ): Promise<string> {
-    // For withdrawals, the value field is the withdraw amount
-    // and the data field contains the recipient address
-    const withdrawAmount = parsed.value || 0n;
-    // Recipient is encoded in data field or defaults to sender
-    let withdrawRecipient: Hex;
-    if (parsed.data && parsed.data.length >= 42) {
-      withdrawRecipient = ('0x' + parsed.data.slice(2, 42)) as Hex;
-    } else {
-      withdrawRecipient = senderAddress;
-    }
-
-    console.log(`[Withdraw] ${senderAddress} withdrawing ${withdrawAmount} to ${withdrawRecipient}`);
-
-    // Select notes - can return 1 or 2 notes
-    const selectedNotes = session.noteStore.selectNotesForSpend(withdrawAmount);
-    if (!selectedNotes) {
-      const unspent = session.noteStore.getUnspentNotes();
-      const total = unspent.reduce((sum, n) => sum + n.amount, 0n);
-      throw new Error(`Insufficient balance. Have ${total}, need ${withdrawAmount}`);
-    }
-
-    // Route to single-note or two-note execution
-    if (selectedNotes.length === 1) {
-      return this.executeWithdrawSingleNote(
-        parsed, session, senderAddress, signedTx, selectedNotes[0],
-        recoveredPubKey, withdrawAmount, withdrawRecipient
-      );
-    }
-
-    const [note0, note1] = selectedNotes;
+    const [note0, note1] = notes;
     const totalInput = note0.amount + note1.amount;
     const changeAmount = totalInput - withdrawAmount;
     const txNonce = parsed.nonce ?? 0;
@@ -836,22 +1030,21 @@ export class RpcAdapter {
     const proof0 = this.merkleTree.generateProof(note0.leafIndex);
     const proof1 = this.merkleTree.generateProof(note1.leafIndex);
 
-    // Nullifiers (using session's nullifierKey, bound to commitment via nkHash)
+    // Nullifiers
     const nullifier0 = computeNullifier(note0.commitment, session.keys.nullifierKey);
     const nullifier1 = computeNullifier(note1.commitment, session.keys.nullifierKey);
 
-    // Change commitment (uses sender's nullifierKeyHash)
+    // Change commitment
     const changeOwner = BigInt(senderAddress);
     const changeRandomness = BigInt(keccak256(concat([signedTx, '0x02']))) % FIELD_SIZE;
     const changeCommitment =
       changeAmount > 0n ? computeCommitment(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash) : 0n;
 
-    // Intent nullifier = poseidon(signer, chainId, nonce, WITHDRAW_SENTINEL, value)
-    const intentNullifier = computeWithdrawIntentNullifier(
-      BigInt(senderAddress),
+    // Intent nullifier = poseidon(nullifierKey, chainId, nonce)
+    const intentNullifier = computeIntentNullifier(
+      session.keys.nullifierKey,
       VIRTUAL_CHAIN_ID,
-      BigInt(txNonce),
-      withdrawAmount
+      BigInt(txNonce)
     );
 
     const signatureData = extractSignatureFromTx(
@@ -895,7 +1088,10 @@ export class RpcAdapter {
     console.log('[Withdraw] Generating proof...');
     const { proof } = await generateWithdrawProof(circuitInputs);
 
-    // Encrypt change note for recovery on session restart
+    // Update status to submitting
+    this.pendingTxs.set(virtualHash, { status: 'submitting', reservedNotes: notes });
+
+    // Encrypt change note
     const encryptedChange = changeAmount > 0n
       ? await encryptNoteData(session.keys.encryptionPubKey, {
           owner: changeOwner,
@@ -917,10 +1113,21 @@ export class RpcAdapter {
     const receipt = await waitForReceipt(l1Hash);
     const leafIndex = changeCommitment !== 0n ? parseWithdrawLeafIndex(receipt) : 0;
 
-    // Sync merkle tree from chain to ensure consistency
-    await syncFromChain(this.merkleTree, this.spentNullifiers, this.usedIntents);
+    console.log(`[L1] Withdraw confirmed: ${l1Hash}`);
 
-    // Update user's note store
+    // Mark L1 tx as confirmed immediately (so getTransactionReceipt works)
+    this.txHashMapping.set(virtualHash, l1Hash);
+    this.pendingTxs.set(virtualHash, { status: 'complete', l1Hash });
+
+    // Update merkle tree locally (no full sync needed)
+    if (changeCommitment !== 0n) {
+      this.merkleTree.insert(changeCommitment);
+    }
+    this.spentNullifiers.add(nullifier0);
+    this.spentNullifiers.add(nullifier1);
+    this.usedIntents.add(intentNullifier);
+
+    // Update notes
     session.noteStore.markSpent(note0.commitment);
     session.noteStore.markSpent(note1.commitment);
 
@@ -928,11 +1135,6 @@ export class RpcAdapter {
       const changeNote = createNoteWithRandomness(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash, leafIndex);
       session.noteStore.addNote(changeNote);
     }
-
-    session.virtualNonce += 1n;
-
-    const virtualHash = keccak256(signedTx);
-    this.txHashMapping.set(virtualHash, l1Hash);
 
     // Record transaction
     session.transactions.push({
@@ -945,10 +1147,13 @@ export class RpcAdapter {
     });
 
     console.log(`[Withdraw] Complete! l1Hash=${l1Hash}`);
-    return virtualHash;
+    return l1Hash;
   }
 
-  private async executeWithdrawSingleNote(
+  /**
+   * Execute withdrawal with single note (async version - updates status, returns l1Hash)
+   */
+  private async executeWithdrawSingleNoteAsync(
     parsed: ReturnType<typeof parseTransaction>,
     session: UserSession,
     senderAddress: Hex,
@@ -956,7 +1161,8 @@ export class RpcAdapter {
     note: Note,
     recoveredPubKey: Hex,
     withdrawAmount: bigint,
-    withdrawRecipient: Hex
+    withdrawRecipient: Hex,
+    virtualHash: string
   ): Promise<string> {
     console.log('[Withdraw] Using single-note with phantom input');
 
@@ -967,23 +1173,22 @@ export class RpcAdapter {
     const proof0 = this.merkleTree.generateProof(note.leafIndex);
     const nullifier0 = computeNullifier(note.commitment, session.keys.nullifierKey);
 
-    // Phantom note (input 1) - amount=0 skips merkle verification in circuit
+    // Phantom note (input 1)
     const phantomRandomness = BigInt(keccak256(concat([signedTx, '0xff']))) % FIELD_SIZE;
     const phantomCommitment = computeCommitment(0n, BigInt(senderAddress), phantomRandomness, session.keys.nullifierKeyHash);
     const nullifier1 = computeNullifier(phantomCommitment, session.keys.nullifierKey);
 
-    // Change commitment (uses sender's nullifierKeyHash)
+    // Change commitment
     const changeOwner = BigInt(senderAddress);
     const changeRandomness = BigInt(keccak256(concat([signedTx, '0x02']))) % FIELD_SIZE;
     const changeCommitment =
       changeAmount > 0n ? computeCommitment(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash) : 0n;
 
-    // Intent nullifier
-    const intentNullifier = computeWithdrawIntentNullifier(
-      BigInt(senderAddress),
+    // Intent nullifier = poseidon(nullifierKey, chainId, nonce)
+    const intentNullifier = computeIntentNullifier(
+      session.keys.nullifierKey,
       VIRTUAL_CHAIN_ID,
-      BigInt(txNonce),
-      withdrawAmount
+      BigInt(txNonce)
     );
 
     const signatureData = extractSignatureFromTx(
@@ -1014,7 +1219,6 @@ export class RpcAdapter {
         siblings: proof0.siblings,
       },
       input1: {
-        // Phantom input - amount=0 triggers circuit to skip merkle verification
         amount: 0n,
         randomness: phantomRandomness,
         leafIndex: 0,
@@ -1028,7 +1232,10 @@ export class RpcAdapter {
     console.log('[Withdraw] Generating proof (single-note)...');
     const { proof } = await generateWithdrawProof(circuitInputs);
 
-    // Encrypt change note for recovery on session restart
+    // Update status to submitting
+    this.pendingTxs.set(virtualHash, { status: 'submitting', reservedNotes: [note] });
+
+    // Encrypt change note
     const encryptedChange = changeAmount > 0n
       ? await encryptNoteData(session.keys.encryptionPubKey, {
           owner: changeOwner,
@@ -1050,21 +1257,27 @@ export class RpcAdapter {
     const receipt = await waitForReceipt(l1Hash);
     const leafIndex = changeCommitment !== 0n ? parseWithdrawLeafIndex(receipt) : 0;
 
-    // Sync merkle tree
-    await syncFromChain(this.merkleTree, this.spentNullifiers, this.usedIntents);
+    console.log(`[L1] Withdraw confirmed: ${l1Hash}`);
 
-    // Update user's note store
+    // Mark L1 tx as confirmed immediately (so getTransactionReceipt works)
+    this.txHashMapping.set(virtualHash, l1Hash);
+    this.pendingTxs.set(virtualHash, { status: 'complete', l1Hash });
+
+    // Update merkle tree locally (no full sync needed)
+    if (changeCommitment !== 0n) {
+      this.merkleTree.insert(changeCommitment);
+    }
+    this.spentNullifiers.add(nullifier0);
+    this.spentNullifiers.add(nullifier1);
+    this.usedIntents.add(intentNullifier);
+
+    // Update notes
     session.noteStore.markSpent(note.commitment);
 
     if (changeCommitment !== 0n) {
       const changeNote = createNoteWithRandomness(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash, leafIndex);
       session.noteStore.addNote(changeNote);
     }
-
-    session.virtualNonce += 1n;
-
-    const virtualHash = keccak256(signedTx);
-    this.txHashMapping.set(virtualHash, l1Hash);
 
     // Record transaction
     session.transactions.push({
@@ -1077,7 +1290,7 @@ export class RpcAdapter {
     });
 
     console.log(`[Withdraw] Complete (single-note)! l1Hash=${l1Hash}`);
-    return virtualHash;
+    return l1Hash;
   }
 
   // ==================== Receipt Methods ====================
@@ -1120,33 +1333,53 @@ export class RpcAdapter {
 
   private async getTransactionByHash(txHash: string): Promise<unknown> {
     const l1Hash = this.txHashMapping.get(txHash);
-    if (!l1Hash) {
-      return null;
+    if (l1Hash) {
+      try {
+        const tx = await l1Public.getTransaction({ hash: l1Hash as Hex });
+        if (!tx) return null;
+
+        // Convert BigInts to hex strings for JSON serialization
+        return {
+          hash: txHash,
+          blockHash: tx.blockHash,
+          blockNumber: tx.blockNumber ? toHex(tx.blockNumber) : null,
+          from: tx.from,
+          gas: toHex(tx.gas),
+          gasPrice: tx.gasPrice ? toHex(tx.gasPrice) : '0x0',
+          input: tx.input,
+          nonce: toHex(tx.nonce),
+          to: tx.to,
+          transactionIndex: tx.transactionIndex !== null ? toHex(tx.transactionIndex) : null,
+          value: toHex(tx.value),
+          type: toHex(tx.type === 'eip1559' ? 2 : 0),
+          chainId: tx.chainId ? toHex(tx.chainId) : null,
+        };
+      } catch {
+        return null;
+      }
     }
 
-    try {
-      const tx = await l1Public.getTransaction({ hash: l1Hash as Hex });
-      if (!tx) return null;
-
-      // Convert BigInts to hex strings for JSON serialization
+    // Return synthetic pending tx if in-flight (prevents MetaMask "dropped" status)
+    const pending = this.pendingTxs.get(txHash);
+    if (pending && (pending.status === 'proving' || pending.status === 'submitting')) {
       return {
         hash: txHash,
-        blockHash: tx.blockHash,
-        blockNumber: tx.blockNumber ? toHex(tx.blockNumber) : null,
-        from: tx.from,
-        gas: toHex(tx.gas),
-        gasPrice: tx.gasPrice ? toHex(tx.gasPrice) : '0x0',
-        input: tx.input,
-        nonce: toHex(tx.nonce),
-        to: tx.to,
-        transactionIndex: tx.transactionIndex !== null ? toHex(tx.transactionIndex) : null,
-        value: toHex(tx.value),
-        type: toHex(tx.type === 'eip1559' ? 2 : 0),
-        chainId: tx.chainId ? toHex(tx.chainId) : null,
+        blockHash: null,
+        blockNumber: null,
+        from: null,
+        to: null,
+        value: '0x0',
+        nonce: '0x0',
+        gas: '0x0',
+        gasPrice: '0x0',
+        input: '0x',
+        transactionIndex: null,
+        type: '0x2',
+        chainId: toHex(VIRTUAL_CHAIN_ID),
       };
-    } catch {
-      return null;
     }
+
+    return null;
   }
 
   // ==================== Custom Methods ====================
@@ -1331,21 +1564,16 @@ export class RpcAdapter {
     // Sort transactions by timestamp (block number)
     recoveredTransactions.sort((a, b) => a.timestamp - b.timestamp);
 
-    // Count outgoing transactions (sent transfers + withdrawals) to determine starting nonce
-    // Each outgoing transaction uses up a nonce
-    const outgoingCount = recoveredTransactions.filter(
-      tx => tx.type === 'transfer_out' || tx.type === 'withdraw'
-    ).length;
-    const startingNonce = BigInt(outgoingCount);
-
     this.sessions.set(normalizedAddress, {
       address: normalizedAddress,
       keys: sessionKeys,
       noteStore,
-      virtualNonce: startingNonce,
       transactions: recoveredTransactions,
+      txInFlight: false,
     });
 
+    // Log starting nonce (computed from usedIntents)
+    const startingNonce = this.recoverNonce(sessionKeys.nullifierKey);
     console.log(`[RegisterViewingKey] ${normalizedAddress}, recovered ${recoveredCount} notes, starting nonce ${startingNonce}`);
     return true;
   }

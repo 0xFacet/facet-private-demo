@@ -3,7 +3,7 @@
 
 use poseidon::poseidon::bn254::hash_2;
 use poseidon::poseidon::bn254::hash_3;
-use poseidon::poseidon::bn254::hash_5;
+use poseidon::poseidon::bn254::hash_4;
 
 /// Verify a merkle proof for a leaf
 /// Returns true if the proof is valid
@@ -45,9 +45,10 @@ pub fn compute_merkle_root<let DEPTH: u32>(
     current_hash
 }
 
-/// Compute a note commitment: poseidon(amount, owner, randomness)
-pub fn compute_commitment(amount: Field, owner: Field, randomness: Field) -> Field {
-    hash_3([amount, owner, randomness])
+/// Compute a note commitment: poseidon(amount, owner, randomness, nullifier_key_hash)
+/// The nullifier_key_hash binds the note to a specific nullifier key for spending
+pub fn compute_commitment(amount: Field, owner: Field, randomness: Field, nullifier_key_hash: Field) -> Field {
+    hash_4([amount, owner, randomness, nullifier_key_hash])
 }
 
 /// Compute a nullifier: poseidon(commitment, nullifier_key)
@@ -55,15 +56,15 @@ pub fn compute_nullifier(commitment: Field, nullifier_key: Field) -> Field {
     hash_2([commitment, nullifier_key])
 }
 
-/// Compute an intent nullifier: poseidon(signer, chain_id, nonce, to, value)
+/// Compute an intent nullifier: poseidon(nullifier_key, chain_id, nonce)
+/// Uses secret nullifier_key for privacy (prevents dictionary attacks)
+/// One nonce = one spend, regardless of tx content
 pub fn compute_intent_nullifier(
-    signer: Field,
+    nullifier_key: Field,
     chain_id: Field,
-    nonce: Field,
-    to: Field,
-    value: Field
+    nonce: Field
 ) -> Field {
-    hash_5([signer, chain_id, nonce, to, value])
+    hash_3([nullifier_key, chain_id, nonce])
 }
 
 #[test]
