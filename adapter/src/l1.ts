@@ -153,13 +153,15 @@ export const relayer = RELAYER_PRIVATE_KEY
   : null;
 
 /**
- * Get the current merkle root from the contract
+ * Get the merkle root from the contract at a specific block
+ * @param blockNumber Optional block number (defaults to 'latest')
  */
-export async function getContractRoot(): Promise<bigint> {
+export async function getContractRoot(blockNumber?: bigint): Promise<bigint> {
   const root = await l1Public.readContract({
     address: CONTRACTS.privacyPool as Hex,
     abi: PRIVACY_POOL_ABI,
     functionName: 'getLastRoot',
+    blockNumber,
   });
   return root as bigint;
 }

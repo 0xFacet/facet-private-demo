@@ -802,6 +802,12 @@ export class RpcAdapter {
       [encryptedNote0, encryptedNote1]
     );
     const receipt = await waitForReceipt(l1Hash);
+
+    // Mark notes spent IMMEDIATELY after L1 confirmation, before parsing
+    // This prevents note corruption if parsing fails (notes are spent on L1 regardless)
+    session.noteStore.markSpent(notes[0].commitment);
+    session.noteStore.markSpent(notes[1].commitment);
+
     const [leafIndex0, leafIndex1] = parseTransferLeafIndices(receipt);
 
     console.log(`[L1] Transfer confirmed: ${l1Hash}`);
@@ -816,10 +822,6 @@ export class RpcAdapter {
     this.spentNullifiers.add(nullifier0);
     this.spentNullifiers.add(nullifier1);
     this.usedIntents.add(intentNullifier);
-
-    // Update notes
-    session.noteStore.markSpent(notes[0].commitment);
-    session.noteStore.markSpent(notes[1].commitment);
 
     if (change > 0n) {
       const changeNote = createNoteWithRandomness(change, output1Owner, output1Randomness, session.keys.nullifierKeyHash, leafIndex1);
@@ -976,6 +978,11 @@ export class RpcAdapter {
       [encryptedNote0, encryptedNote1]
     );
     const receipt = await waitForReceipt(l1Hash);
+
+    // Mark note spent IMMEDIATELY after L1 confirmation, before parsing
+    // This prevents note corruption if parsing fails (note is spent on L1 regardless)
+    session.noteStore.markSpent(note.commitment);
+
     const [leafIndex0, leafIndex1] = parseTransferLeafIndices(receipt);
 
     console.log(`[L1] Transfer confirmed: ${l1Hash}`);
@@ -990,9 +997,6 @@ export class RpcAdapter {
     this.spentNullifiers.add(nullifier0);
     this.spentNullifiers.add(nullifier1);
     this.usedIntents.add(intentNullifier);
-
-    // Update notes
-    session.noteStore.markSpent(note.commitment);
 
     if (change > 0n) {
       const changeNote = createNoteWithRandomness(change, output1Owner, output1Randomness, session.keys.nullifierKeyHash, leafIndex1);
@@ -1049,8 +1053,8 @@ export class RpcAdapter {
     // Change commitment
     const changeOwner = BigInt(senderAddress);
     const changeRandomness = BigInt(keccak256(concat([signedTx, '0x02']))) % FIELD_SIZE;
-    const changeCommitment =
-      changeAmount > 0n ? computeCommitment(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash) : 0n;
+    // Always compute commitment (even for zero change) - circuit expects hash_4
+    const changeCommitment = computeCommitment(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash);
 
     // Intent nullifier = poseidon(nullifierKey, chainId, nonce)
     const intentNullifier = computeIntentNullifier(
@@ -1123,7 +1127,13 @@ export class RpcAdapter {
       encryptedChange
     );
     const receipt = await waitForReceipt(l1Hash);
-    const leafIndex = changeCommitment !== 0n ? parseWithdrawLeafIndex(receipt) : 0;
+
+    // Mark notes spent IMMEDIATELY after L1 confirmation, before parsing
+    // This prevents note corruption if parsing fails (notes are spent on L1 regardless)
+    session.noteStore.markSpent(note0.commitment);
+    session.noteStore.markSpent(note1.commitment);
+
+    const leafIndex = changeAmount > 0n ? parseWithdrawLeafIndex(receipt) : 0;
 
     console.log(`[L1] Withdraw confirmed: ${l1Hash}`);
 
@@ -1132,18 +1142,14 @@ export class RpcAdapter {
     this.pendingTxs.set(virtualHash, { status: 'complete', l1Hash });
 
     // Update merkle tree locally (no full sync needed)
-    if (changeCommitment !== 0n) {
+    if (changeAmount > 0n) {
       this.merkleTree.insert(changeCommitment);
     }
     this.spentNullifiers.add(nullifier0);
     this.spentNullifiers.add(nullifier1);
     this.usedIntents.add(intentNullifier);
 
-    // Update notes
-    session.noteStore.markSpent(note0.commitment);
-    session.noteStore.markSpent(note1.commitment);
-
-    if (changeCommitment !== 0n) {
+    if (changeAmount > 0n) {
       const changeNote = createNoteWithRandomness(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash, leafIndex);
       session.noteStore.addNote(changeNote);
     }
@@ -1193,8 +1199,8 @@ export class RpcAdapter {
     // Change commitment
     const changeOwner = BigInt(senderAddress);
     const changeRandomness = BigInt(keccak256(concat([signedTx, '0x02']))) % FIELD_SIZE;
-    const changeCommitment =
-      changeAmount > 0n ? computeCommitment(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash) : 0n;
+    // Always compute commitment (even for zero change) - circuit expects hash_4
+    const changeCommitment = computeCommitment(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash);
 
     // Intent nullifier = poseidon(nullifierKey, chainId, nonce)
     const intentNullifier = computeIntentNullifier(
@@ -1267,7 +1273,12 @@ export class RpcAdapter {
       encryptedChange
     );
     const receipt = await waitForReceipt(l1Hash);
-    const leafIndex = changeCommitment !== 0n ? parseWithdrawLeafIndex(receipt) : 0;
+
+    // Mark note spent IMMEDIATELY after L1 confirmation, before parsing
+    // This prevents note corruption if parsing fails (note is spent on L1 regardless)
+    session.noteStore.markSpent(note.commitment);
+
+    const leafIndex = changeAmount > 0n ? parseWithdrawLeafIndex(receipt) : 0;
 
     console.log(`[L1] Withdraw confirmed: ${l1Hash}`);
 
@@ -1276,17 +1287,14 @@ export class RpcAdapter {
     this.pendingTxs.set(virtualHash, { status: 'complete', l1Hash });
 
     // Update merkle tree locally (no full sync needed)
-    if (changeCommitment !== 0n) {
+    if (changeAmount > 0n) {
       this.merkleTree.insert(changeCommitment);
     }
     this.spentNullifiers.add(nullifier0);
     this.spentNullifiers.add(nullifier1);
     this.usedIntents.add(intentNullifier);
 
-    // Update notes
-    session.noteStore.markSpent(note.commitment);
-
-    if (changeCommitment !== 0n) {
+    if (changeAmount > 0n) {
       const changeNote = createNoteWithRandomness(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash, leafIndex);
       session.noteStore.addNote(changeNote);
     }

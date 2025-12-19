@@ -72,25 +72,29 @@ export async function syncFromChain(
 
   const poolAddress = CONTRACTS.privacyPool as Hex;
 
-  // Fetch all event types in parallel
+  // Pin block number to ensure consistent snapshot across all queries
+  // This prevents race conditions where new blocks land mid-sync
+  const toBlock = await l1Public.getBlockNumber();
+
+  // Fetch all event types in parallel (all at the same pinned block)
   const [depositLogs, transferLogs, withdrawLogs] = await Promise.all([
     l1Public.getLogs({
       address: poolAddress,
       event: parseAbiItem('event Deposit(uint256 indexed commitment, uint256 indexed leafIndex, uint256 amount, uint256 owner, uint256 randomness, bytes encryptedNote)'),
       fromBlock: DEPLOY_BLOCK,
-      toBlock: 'latest',
+      toBlock,
     }),
     l1Public.getLogs({
       address: poolAddress,
       event: parseAbiItem('event Transfer(uint256[2] nullifiers, uint256[2] commitments, uint256[2] leafIndices, uint256 intentNullifier, bytes[2] encryptedNotes)'),
       fromBlock: DEPLOY_BLOCK,
-      toBlock: 'latest',
+      toBlock,
     }),
     l1Public.getLogs({
       address: poolAddress,
       event: parseAbiItem('event Withdrawal(uint256[2] nullifiers, uint256 changeCommitment, uint256 changeLeafIndex, uint256 intentNullifier, address indexed recipient, uint256 amount, bytes encryptedChange)'),
       fromBlock: DEPLOY_BLOCK,
-      toBlock: 'latest',
+      toBlock,
     }),
   ]);
 
@@ -196,9 +200,9 @@ export async function syncFromChain(
     }
   }
 
-  // Verify temp tree root matches contract
+  // Verify temp tree root matches contract (at the same pinned block)
   const tempRoot = tempTree.getRoot();
-  const contractRoot = await getContractRoot();
+  const contractRoot = await getContractRoot(toBlock);
 
   if (tempRoot !== contractRoot) {
     console.error(`[Sync] WARNING: Root mismatch! Keeping existing state.`);
@@ -241,24 +245,27 @@ export async function getEventsSinceBlock(fromBlock: bigint): Promise<PoolEvent[
   const poolAddress = CONTRACTS.privacyPool as Hex;
   const events: PoolEvent[] = [];
 
+  // Pin block number for consistent snapshot across all queries
+  const toBlock = await l1Public.getBlockNumber();
+
   const [depositLogs, transferLogs, withdrawLogs] = await Promise.all([
     l1Public.getLogs({
       address: poolAddress,
       event: parseAbiItem('event Deposit(uint256 indexed commitment, uint256 indexed leafIndex, uint256 amount, uint256 owner, uint256 randomness, bytes encryptedNote)'),
       fromBlock,
-      toBlock: 'latest',
+      toBlock,
     }),
     l1Public.getLogs({
       address: poolAddress,
       event: parseAbiItem('event Transfer(uint256[2] nullifiers, uint256[2] commitments, uint256[2] leafIndices, uint256 intentNullifier, bytes[2] encryptedNotes)'),
       fromBlock,
-      toBlock: 'latest',
+      toBlock,
     }),
     l1Public.getLogs({
       address: poolAddress,
       event: parseAbiItem('event Withdrawal(uint256[2] nullifiers, uint256 changeCommitment, uint256 changeLeafIndex, uint256 intentNullifier, address indexed recipient, uint256 amount, bytes encryptedChange)'),
       fromBlock,
-      toBlock: 'latest',
+      toBlock,
     }),
   ]);
 
