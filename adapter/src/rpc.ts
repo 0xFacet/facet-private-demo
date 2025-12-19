@@ -803,7 +803,12 @@ export class RpcAdapter {
     );
     const receipt = await waitForReceipt(l1Hash);
 
-    // Mark notes spent IMMEDIATELY after L1 confirmation, before parsing
+    // Check if L1 tx succeeded before updating local state
+    if (receipt.status !== 'success') {
+      throw new Error(`L1 transaction reverted: ${l1Hash}`);
+    }
+
+    // Mark notes spent IMMEDIATELY after L1 success, before parsing
     // This prevents note corruption if parsing fails (notes are spent on L1 regardless)
     session.noteStore.markSpent(notes[0].commitment);
     session.noteStore.markSpent(notes[1].commitment);
@@ -979,7 +984,12 @@ export class RpcAdapter {
     );
     const receipt = await waitForReceipt(l1Hash);
 
-    // Mark note spent IMMEDIATELY after L1 confirmation, before parsing
+    // Check if L1 tx succeeded before updating local state
+    if (receipt.status !== 'success') {
+      throw new Error(`L1 transaction reverted: ${l1Hash}`);
+    }
+
+    // Mark note spent IMMEDIATELY after L1 success, before parsing
     // This prevents note corruption if parsing fails (note is spent on L1 regardless)
     session.noteStore.markSpent(note.commitment);
 
@@ -1128,12 +1138,18 @@ export class RpcAdapter {
     );
     const receipt = await waitForReceipt(l1Hash);
 
-    // Mark notes spent IMMEDIATELY after L1 confirmation, before parsing
+    // Check if L1 tx succeeded before updating local state
+    if (receipt.status !== 'success') {
+      throw new Error(`L1 transaction reverted: ${l1Hash}`);
+    }
+
+    // Mark notes spent IMMEDIATELY after L1 success, before parsing
     // This prevents note corruption if parsing fails (notes are spent on L1 regardless)
     session.noteStore.markSpent(note0.commitment);
     session.noteStore.markSpent(note1.commitment);
 
-    const leafIndex = changeAmount > 0n ? parseWithdrawLeafIndex(receipt) : 0;
+    // Contract always inserts changeCommitment (since it's always non-zero hash)
+    const leafIndex = parseWithdrawLeafIndex(receipt);
 
     console.log(`[L1] Withdraw confirmed: ${l1Hash}`);
 
@@ -1141,14 +1157,13 @@ export class RpcAdapter {
     this.txHashMapping.set(virtualHash, l1Hash);
     this.pendingTxs.set(virtualHash, { status: 'complete', l1Hash });
 
-    // Update merkle tree locally (no full sync needed)
-    if (changeAmount > 0n) {
-      this.merkleTree.insert(changeCommitment);
-    }
+    // Update merkle tree locally (contract always inserts since commitment is non-zero hash)
+    this.merkleTree.insert(changeCommitment);
     this.spentNullifiers.add(nullifier0);
     this.spentNullifiers.add(nullifier1);
     this.usedIntents.add(intentNullifier);
 
+    // Only add note to store if there's actual change value
     if (changeAmount > 0n) {
       const changeNote = createNoteWithRandomness(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash, leafIndex);
       session.noteStore.addNote(changeNote);
@@ -1274,11 +1289,17 @@ export class RpcAdapter {
     );
     const receipt = await waitForReceipt(l1Hash);
 
-    // Mark note spent IMMEDIATELY after L1 confirmation, before parsing
+    // Check if L1 tx succeeded before updating local state
+    if (receipt.status !== 'success') {
+      throw new Error(`L1 transaction reverted: ${l1Hash}`);
+    }
+
+    // Mark note spent IMMEDIATELY after L1 success, before parsing
     // This prevents note corruption if parsing fails (note is spent on L1 regardless)
     session.noteStore.markSpent(note.commitment);
 
-    const leafIndex = changeAmount > 0n ? parseWithdrawLeafIndex(receipt) : 0;
+    // Contract always inserts changeCommitment (since it's always non-zero hash)
+    const leafIndex = parseWithdrawLeafIndex(receipt);
 
     console.log(`[L1] Withdraw confirmed: ${l1Hash}`);
 
@@ -1286,14 +1307,13 @@ export class RpcAdapter {
     this.txHashMapping.set(virtualHash, l1Hash);
     this.pendingTxs.set(virtualHash, { status: 'complete', l1Hash });
 
-    // Update merkle tree locally (no full sync needed)
-    if (changeAmount > 0n) {
-      this.merkleTree.insert(changeCommitment);
-    }
+    // Update merkle tree locally (contract always inserts since commitment is non-zero hash)
+    this.merkleTree.insert(changeCommitment);
     this.spentNullifiers.add(nullifier0);
     this.spentNullifiers.add(nullifier1);
     this.usedIntents.add(intentNullifier);
 
+    // Only add note to store if there's actual change value
     if (changeAmount > 0n) {
       const changeNote = createNoteWithRandomness(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash, leafIndex);
       session.noteStore.addNote(changeNote);
