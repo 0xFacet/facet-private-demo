@@ -826,6 +826,12 @@ export class RpcAdapter {
       session.noteStore.addNote(changeNote);
     }
 
+    // For self-transfer: also add recipient note (output_0) to sender's store
+    if (recipient.toLowerCase() === senderAddress.toLowerCase()) {
+      const recipientNote = createNoteWithRandomness(value, output0Owner, output0Randomness, recipientNullifierKeyHash, leafIndex0);
+      session.noteStore.addNote(recipientNote);
+    }
+
     // Record transaction
     session.transactions.push({
       type: 'transfer_out',
@@ -991,6 +997,12 @@ export class RpcAdapter {
     if (change > 0n) {
       const changeNote = createNoteWithRandomness(change, output1Owner, output1Randomness, session.keys.nullifierKeyHash, leafIndex1);
       session.noteStore.addNote(changeNote);
+    }
+
+    // For self-transfer: also add recipient note (output_0) to sender's store
+    if (recipient.toLowerCase() === senderAddress.toLowerCase()) {
+      const recipientNote = createNoteWithRandomness(value, output0Owner, output0Randomness, recipientNullifierKeyHash, leafIndex0);
+      session.noteStore.addNote(recipientNote);
     }
 
     // Record transaction
