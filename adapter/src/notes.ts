@@ -198,15 +198,6 @@ export function createNoteWithRandomness(
 
 // ==================== Helpers ====================
 
-function bigIntToBytes(value: bigint, length: number): Uint8Array {
-  const hex = value.toString(16).padStart(length * 2, '0');
-  const bytes = new Uint8Array(length);
-  for (let i = 0; i < length; i++) {
-    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return bytes;
-}
-
 function bytesToBigInt(bytes: Uint8Array): bigint {
   let hex = '0x';
   for (const byte of bytes) {

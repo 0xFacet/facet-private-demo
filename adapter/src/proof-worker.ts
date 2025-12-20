@@ -72,18 +72,9 @@ function getWithdrawProver(): { backend: UltraHonkBackend; noir: Noir } {
 interface ProofRequest {
   type: 'transfer' | 'withdraw';
   inputs: Record<string, any>; // Already stringified Noir inputs
-  publicInputs: string[]; // Public inputs as hex strings
 }
 
-interface ProofResult {
-  proof: Uint8Array; // Proof bytes - Piscina handles transfer
-  publicInputs: string[];
-}
-
-async function generateTransferProofInternal(
-  noirInputs: Record<string, any>,
-  publicInputs: string[]
-): Promise<ProofResult> {
+async function generateTransferProofInternal(noirInputs: Record<string, any>): Promise<Uint8Array> {
   const startTime = Date.now();
   const { backend, noir } = getTransferProver();
 
@@ -96,16 +87,10 @@ async function generateTransferProofInternal(
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`[Worker] Transfer proof generated in ${elapsed}s`);
 
-  return {
-    proof: proofData.proof,
-    publicInputs,
-  };
+  return proofData.proof;
 }
 
-async function generateWithdrawProofInternal(
-  noirInputs: Record<string, any>,
-  publicInputs: string[]
-): Promise<ProofResult> {
+async function generateWithdrawProofInternal(noirInputs: Record<string, any>): Promise<Uint8Array> {
   const startTime = Date.now();
   const { backend, noir } = getWithdrawProver();
 
@@ -118,18 +103,15 @@ async function generateWithdrawProofInternal(
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`[Worker] Withdraw proof generated in ${elapsed}s`);
 
-  return {
-    proof: proofData.proof,
-    publicInputs,
-  };
+  return proofData.proof;
 }
 
-// Piscina worker entry point - export default async function
-export default async function (request: ProofRequest): Promise<ProofResult> {
+// Piscina worker entry point
+export default async function (request: ProofRequest): Promise<Uint8Array> {
   if (request.type === 'transfer') {
-    return generateTransferProofInternal(request.inputs, request.publicInputs);
+    return generateTransferProofInternal(request.inputs);
   } else if (request.type === 'withdraw') {
-    return generateWithdrawProofInternal(request.inputs, request.publicInputs);
+    return generateWithdrawProofInternal(request.inputs);
   } else {
     throw new Error(`Unknown proof type: ${request.type}`);
   }

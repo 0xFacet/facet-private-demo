@@ -1,11 +1,8 @@
 // ZK Proof generation - worker-based (non-blocking)
-// For blocking/direct proof generation (tests), use proof-direct.ts
 
 import { fileURLToPath } from 'url';
 import { Hex, hexToBytes } from 'viem';
 import { Piscina } from 'piscina';
-
-import { TREE_DEPTH } from './config.js';
 
 /**
  * Note data for circuit input
@@ -244,18 +241,6 @@ export function extractSignatureFromTx(
   };
 }
 
-/**
- * Create phantom note input (for single-note transactions)
- */
-export function createPhantomNoteInput(): NoteInput {
-  return {
-    amount: 0n,
-    randomness: 0n,
-    leafIndex: 0,
-    siblings: Array(TREE_DEPTH).fill(0n),
-  };
-}
-
 // ==================== Worker-based proof generation ====================
 
 // Lazy-initialized worker pool (created on first use)
@@ -280,13 +265,6 @@ function getProofWorkerPool(): Piscina {
 }
 
 /**
- * Convert bigint to hex string for serialization
- */
-function toHexString(value: bigint): string {
-  return '0x' + value.toString(16);
-}
-
-/**
  * Generate a transfer proof using worker thread (non-blocking)
  */
 export async function generateTransferProofWorker(inputs: TransferCircuitInputs): Promise<{
@@ -294,29 +272,13 @@ export async function generateTransferProofWorker(inputs: TransferCircuitInputs)
   publicInputs: bigint[];
 }> {
   const pool = getProofWorkerPool();
-
-  // Build Noir inputs (already stringified)
   const noirInputs = buildTransferInputs(inputs);
 
-  // Public inputs as hex strings for serialization
-  const publicInputsHex = [
-    toHexString(inputs.merkleRoot),
-    toHexString(inputs.nullifier0),
-    toHexString(inputs.nullifier1),
-    toHexString(inputs.outputCommitment0),
-    toHexString(inputs.outputCommitment1),
-    toHexString(inputs.intentNullifier),
-  ];
-
   console.log('[Proof] Sending transfer proof request to worker...');
-  const result = await pool.run({
-    type: 'transfer',
-    inputs: noirInputs,
-    publicInputs: publicInputsHex,
-  });
+  const proof = await pool.run({ type: 'transfer', inputs: noirInputs });
 
   return {
-    proof: new Uint8Array(result.proof),
+    proof: new Uint8Array(proof),
     publicInputs: [
       inputs.merkleRoot,
       inputs.nullifier0,
@@ -336,30 +298,13 @@ export async function generateWithdrawProofWorker(inputs: WithdrawCircuitInputs)
   publicInputs: bigint[];
 }> {
   const pool = getProofWorkerPool();
-
-  // Build Noir inputs (already stringified)
   const noirInputs = buildWithdrawInputs(inputs);
 
-  // Public inputs as hex strings for serialization
-  const publicInputsHex = [
-    toHexString(inputs.merkleRoot),
-    toHexString(inputs.nullifier0),
-    toHexString(inputs.nullifier1),
-    toHexString(inputs.changeCommitment),
-    toHexString(inputs.intentNullifier),
-    toHexString(inputs.withdrawRecipient),
-    inputs.withdrawAmount.toString(),
-  ];
-
   console.log('[Proof] Sending withdraw proof request to worker...');
-  const result = await pool.run({
-    type: 'withdraw',
-    inputs: noirInputs,
-    publicInputs: publicInputsHex,
-  });
+  const proof = await pool.run({ type: 'withdraw', inputs: noirInputs });
 
   return {
-    proof: new Uint8Array(result.proof),
+    proof: new Uint8Array(proof),
     publicInputs: [
       inputs.merkleRoot,
       inputs.nullifier0,
