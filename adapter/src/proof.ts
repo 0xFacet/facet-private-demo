@@ -6,6 +6,7 @@ import { readFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { Hex, hexToBytes } from 'viem';
+import { Piscina } from 'piscina';
 
 import { TREE_DEPTH } from './config.js';
 
@@ -386,5 +387,121 @@ export function createPhantomNoteInput(): NoteInput {
     randomness: 0n,
     leafIndex: 0,
     siblings: Array(TREE_DEPTH).fill(0n),
+  };
+}
+
+// ==================== Worker-based proof generation ====================
+
+// Lazy-initialized worker pool (created on first use)
+let proofWorkerPool: Piscina | null = null;
+
+function getProofWorkerPool(): Piscina {
+  if (!proofWorkerPool) {
+    // Detect if running in TypeScript (tsx dev) or JavaScript (compiled prod)
+    const isTs = import.meta.url.endsWith('.ts');
+    const workerFile = isTs ? './proof-worker.ts' : './proof-worker.js';
+    const workerUrl = new URL(workerFile, import.meta.url).href;
+
+    console.log(`[Proof] Initializing worker pool with ${workerFile}...`);
+    proofWorkerPool = new Piscina({
+      filename: workerUrl,
+      maxThreads: 1, // Single worker to avoid memory bloat
+      // In dev mode, worker needs tsx loader to understand TypeScript
+      execArgv: isTs ? ['--import', 'tsx'] : undefined,
+    });
+  }
+  return proofWorkerPool;
+}
+
+/**
+ * Convert bigint to hex string for serialization
+ */
+function toHexString(value: bigint): string {
+  return '0x' + value.toString(16);
+}
+
+/**
+ * Generate a transfer proof using worker thread (non-blocking)
+ */
+export async function generateTransferProofWorker(inputs: TransferCircuitInputs): Promise<{
+  proof: Uint8Array;
+  publicInputs: bigint[];
+}> {
+  const pool = getProofWorkerPool();
+
+  // Build Noir inputs (already stringified)
+  const noirInputs = buildTransferInputs(inputs);
+
+  // Public inputs as hex strings for serialization
+  const publicInputsHex = [
+    toHexString(inputs.merkleRoot),
+    toHexString(inputs.nullifier0),
+    toHexString(inputs.nullifier1),
+    toHexString(inputs.outputCommitment0),
+    toHexString(inputs.outputCommitment1),
+    toHexString(inputs.intentNullifier),
+  ];
+
+  console.log('[Proof] Sending transfer proof request to worker...');
+  const result = await pool.run({
+    type: 'transfer',
+    inputs: noirInputs,
+    publicInputs: publicInputsHex,
+  });
+
+  return {
+    proof: new Uint8Array(result.proof),
+    publicInputs: [
+      inputs.merkleRoot,
+      inputs.nullifier0,
+      inputs.nullifier1,
+      inputs.outputCommitment0,
+      inputs.outputCommitment1,
+      inputs.intentNullifier,
+    ],
+  };
+}
+
+/**
+ * Generate a withdraw proof using worker thread (non-blocking)
+ */
+export async function generateWithdrawProofWorker(inputs: WithdrawCircuitInputs): Promise<{
+  proof: Uint8Array;
+  publicInputs: bigint[];
+}> {
+  const pool = getProofWorkerPool();
+
+  // Build Noir inputs (already stringified)
+  const noirInputs = buildWithdrawInputs(inputs);
+
+  // Public inputs as hex strings for serialization
+  const publicInputsHex = [
+    toHexString(inputs.merkleRoot),
+    toHexString(inputs.nullifier0),
+    toHexString(inputs.nullifier1),
+    toHexString(inputs.changeCommitment),
+    toHexString(inputs.intentNullifier),
+    toHexString(inputs.withdrawRecipient),
+    inputs.withdrawAmount.toString(),
+  ];
+
+  console.log('[Proof] Sending withdraw proof request to worker...');
+  const result = await pool.run({
+    type: 'withdraw',
+    inputs: noirInputs,
+    publicInputs: publicInputsHex,
+  });
+
+  return {
+    proof: new Uint8Array(result.proof),
+    publicInputs: [
+      inputs.merkleRoot,
+      inputs.nullifier0,
+      inputs.nullifier1,
+      inputs.changeCommitment,
+      inputs.intentNullifier,
+      inputs.withdrawRecipient,
+      inputs.withdrawAmount,
+    ],
   };
 }

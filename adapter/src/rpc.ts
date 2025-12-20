@@ -45,8 +45,8 @@ import {
 } from './l1.js';
 import { syncFromChain, needsRefresh } from './sync.js';
 import {
-  generateTransferProof,
-  generateWithdrawProof,
+  generateTransferProofWorker,
+  generateWithdrawProofWorker,
   extractSignatureFromTx,
   type TransferCircuitInputs,
   type WithdrawCircuitInputs,
@@ -775,7 +775,7 @@ export class RpcAdapter {
     };
 
     console.log('[Transfer] Generating proof...');
-    const { proof } = await generateTransferProof(circuitInputs);
+    const { proof } = await generateTransferProofWorker(circuitInputs);
 
     // Update status to submitting
     this.pendingTxs.set(virtualHash, { status: 'submitting', reservedNotes: notes });
@@ -956,7 +956,7 @@ export class RpcAdapter {
     };
 
     console.log('[Transfer] Generating proof (single-note)...');
-    const { proof } = await generateTransferProof(circuitInputs);
+    const { proof } = await generateTransferProofWorker(circuitInputs);
 
     // Update status to submitting
     this.pendingTxs.set(virtualHash, { status: 'submitting', reservedNotes: [note] });
@@ -1112,7 +1112,7 @@ export class RpcAdapter {
     };
 
     console.log('[Withdraw] Generating proof...');
-    const { proof } = await generateWithdrawProof(circuitInputs);
+    const { proof } = await generateWithdrawProofWorker(circuitInputs);
 
     // Update status to submitting
     this.pendingTxs.set(virtualHash, { status: 'submitting', reservedNotes: notes });
@@ -1263,7 +1263,7 @@ export class RpcAdapter {
     };
 
     console.log('[Withdraw] Generating proof (single-note)...');
-    const { proof } = await generateWithdrawProof(circuitInputs);
+    const { proof } = await generateWithdrawProofWorker(circuitInputs);
 
     // Update status to submitting
     this.pendingTxs.set(virtualHash, { status: 'submitting', reservedNotes: [note] });
