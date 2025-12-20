@@ -1,10 +1,8 @@
 // Configuration constants for the Facet Private adapter
 
 export const VIRTUAL_CHAIN_ID = 13371337n;
-export const L1_CHAIN_ID = 11155111n; // Sepolia
 
 export const TREE_DEPTH = 20;
-export const ROOT_HISTORY_SIZE = 500;
 
 // BN254 scalar field size
 export const FIELD_SIZE = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;

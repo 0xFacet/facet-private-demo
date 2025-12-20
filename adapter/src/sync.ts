@@ -2,7 +2,7 @@
 // Fetches historical events and rebuilds state on startup
 
 import { parseAbiItem, type Hex } from 'viem';
-import { l1Public, PRIVACY_POOL_EVENTS, getContractRoot } from './l1.js';
+import { l1Public, getContractRoot } from './l1.js';
 import { CONTRACTS } from './config.js';
 import { MerkleTree } from './merkle.js';
 
@@ -236,96 +236,6 @@ export async function needsRefresh(merkleTree: MerkleTree): Promise<boolean> {
   const localRoot = merkleTree.getRoot();
   const contractRoot = await getContractRoot();
   return localRoot !== contractRoot;
-}
-
-/**
- * Get all events since a specific block (for incremental sync)
- */
-export async function getEventsSinceBlock(fromBlock: bigint): Promise<PoolEvent[]> {
-  const poolAddress = CONTRACTS.privacyPool as Hex;
-  const events: PoolEvent[] = [];
-
-  // Pin block number for consistent snapshot across all queries
-  const toBlock = await l1Public.getBlockNumber();
-
-  const [depositLogs, transferLogs, withdrawLogs] = await Promise.all([
-    l1Public.getLogs({
-      address: poolAddress,
-      event: parseAbiItem('event Deposit(uint256 indexed commitment, uint256 indexed leafIndex, uint256 amount, uint256 owner, uint256 randomness, bytes encryptedNote)'),
-      fromBlock,
-      toBlock,
-    }),
-    l1Public.getLogs({
-      address: poolAddress,
-      event: parseAbiItem('event Transfer(uint256[2] nullifiers, uint256[2] commitments, uint256[2] leafIndices, uint256 intentNullifier, bytes[2] encryptedNotes)'),
-      fromBlock,
-      toBlock,
-    }),
-    l1Public.getLogs({
-      address: poolAddress,
-      event: parseAbiItem('event Withdrawal(uint256[2] nullifiers, uint256 changeCommitment, uint256 changeLeafIndex, uint256 intentNullifier, address indexed recipient, uint256 amount, bytes encryptedChange)'),
-      fromBlock,
-      toBlock,
-    }),
-  ]);
-
-  // Parse events (same as above)
-  for (const log of depositLogs) {
-    const args = log.args as any;
-    events.push({
-      type: 'deposit',
-      commitment: args.commitment,
-      leafIndex: Number(args.leafIndex),
-      amount: args.amount,
-      owner: args.owner,
-      randomness: args.randomness,
-      encryptedNote: args.encryptedNote,
-      blockNumber: log.blockNumber,
-      logIndex: log.logIndex,
-      txHash: log.transactionHash,
-    });
-  }
-
-  for (const log of transferLogs) {
-    const args = log.args as any;
-    events.push({
-      type: 'transfer',
-      nullifiers: [args.nullifiers[0], args.nullifiers[1]],
-      commitments: [args.commitments[0], args.commitments[1]],
-      leafIndices: [Number(args.leafIndices[0]), Number(args.leafIndices[1])],
-      intentNullifier: args.intentNullifier,
-      encryptedNotes: args.encryptedNotes,
-      blockNumber: log.blockNumber,
-      logIndex: log.logIndex,
-      txHash: log.transactionHash,
-    });
-  }
-
-  for (const log of withdrawLogs) {
-    const args = log.args as any;
-    events.push({
-      type: 'withdraw',
-      nullifiers: [args.nullifiers[0], args.nullifiers[1]],
-      changeCommitment: args.changeCommitment,
-      changeLeafIndex: Number(args.changeLeafIndex),
-      intentNullifier: args.intentNullifier,
-      recipient: args.recipient,
-      amount: args.amount,
-      encryptedChange: args.encryptedChange,
-      blockNumber: log.blockNumber,
-      logIndex: log.logIndex,
-      txHash: log.transactionHash,
-    });
-  }
-
-  events.sort((a, b) => {
-    if (a.blockNumber !== b.blockNumber) {
-      return Number(a.blockNumber - b.blockNumber);
-    }
-    return a.logIndex - b.logIndex;
-  });
-
-  return events;
 }
 
 /**

@@ -53,16 +53,6 @@ export function poseidon4(inputs: [bigint, bigint, bigint, bigint]): bigint {
   return BigInt(poseidon.F.toString(result));
 }
 
-/**
- * Hash 5 field elements (equivalent to PoseidonT6 in Solidity)
- * Used for intent nullifiers: poseidon(signer, chainId, nonce, to, value)
- */
-export function poseidon5(inputs: [bigint, bigint, bigint, bigint, bigint]): bigint {
-  const poseidon = getPoseidon();
-  const result = poseidon(inputs);
-  return BigInt(poseidon.F.toString(result));
-}
-
 // Domain separator for nullifier key hash computation (must match circuit constant)
 const NULLIFIER_KEY_DOMAIN = 1n;
 

@@ -30,7 +30,6 @@ import { initPoseidon, computeCommitment, computeNullifier, computeNullifierKeyH
 import { deriveEncryptionKeypair, encryptNoteData, decryptNoteData, pubKeyToHex, hexToPubKey } from './crypto/ecies.js';
 import {
   l1Public,
-  submitDeposit,
   submitTransfer,
   submitWithdraw,
   waitForReceipt,
@@ -39,7 +38,6 @@ import {
   getEncryptionKey,
   getNullifierKeyHash as getRegistryNullifierKeyHash,
   isUserRegistered,
-  parseDepositLeafIndex,
   parseTransferLeafIndices,
   parseWithdrawLeafIndex,
 } from './l1.js';
@@ -51,11 +49,6 @@ import {
   type TransferCircuitInputs,
   type WithdrawCircuitInputs,
 } from './proof.js';
-
-// Fixed gas parameters - MUST match circuit constants
-const FIXED_MAX_PRIORITY_FEE = 1000000000n; // 1 gwei
-const FIXED_MAX_FEE = 30000000000n; // 30 gwei
-const FIXED_GAS_LIMIT = 21000n; // simple transfer
 
 interface JsonRpcRequest {
   jsonrpc: string;
@@ -94,7 +87,6 @@ interface PendingTransaction {
   status: 'proving' | 'submitting' | 'complete' | 'failed';
   l1Hash?: string;
   error?: string;
-  reservedNotes?: Note[]; // For cleanup on failure
 }
 
 /**
@@ -536,10 +528,7 @@ export class RpcAdapter {
       validated.session.noteStore.reserveNotes(validated.selectedNotes);
 
       // Mark as pending
-      this.pendingTxs.set(virtualHash, {
-        status: 'proving',
-        reservedNotes: validated.selectedNotes,
-      });
+      this.pendingTxs.set(virtualHash, { status: 'proving' });
 
       // Start background processing (don't await)
       this.processTransactionAsync(virtualHash, signedTx as Hex, validated)
@@ -778,7 +767,7 @@ export class RpcAdapter {
     const { proof } = await generateTransferProofWorker(circuitInputs);
 
     // Update status to submitting
-    this.pendingTxs.set(virtualHash, { status: 'submitting', reservedNotes: notes });
+    this.pendingTxs.set(virtualHash, { status: 'submitting' });
 
     // Encrypt note data
     const encryptedNote0 = await encryptNoteData(recipientPubKey, {
@@ -959,7 +948,7 @@ export class RpcAdapter {
     const { proof } = await generateTransferProofWorker(circuitInputs);
 
     // Update status to submitting
-    this.pendingTxs.set(virtualHash, { status: 'submitting', reservedNotes: [note] });
+    this.pendingTxs.set(virtualHash, { status: 'submitting' });
 
     // Encrypt note data
     const encryptedNote0 = await encryptNoteData(recipientPubKey, {
@@ -1115,7 +1104,7 @@ export class RpcAdapter {
     const { proof } = await generateWithdrawProofWorker(circuitInputs);
 
     // Update status to submitting
-    this.pendingTxs.set(virtualHash, { status: 'submitting', reservedNotes: notes });
+    this.pendingTxs.set(virtualHash, { status: 'submitting' });
 
     // Encrypt change note
     const encryptedChange = changeAmount > 0n
@@ -1266,7 +1255,7 @@ export class RpcAdapter {
     const { proof } = await generateWithdrawProofWorker(circuitInputs);
 
     // Update status to submitting
-    this.pendingTxs.set(virtualHash, { status: 'submitting', reservedNotes: [note] });
+    this.pendingTxs.set(virtualHash, { status: 'submitting' });
 
     // Encrypt change note
     const encryptedChange = changeAmount > 0n
@@ -1663,12 +1652,6 @@ export class RpcAdapter {
       recipient: tx.recipient,
       timestamp: tx.timestamp,
     }));
-    // Debug: log withdraw l1Hash values
-    for (const tx of result) {
-      if (tx.type === 'withdraw') {
-        console.log(`[getTransactions] withdraw l1Hash=${tx.l1Hash}`);
-      }
-    }
     return result;
   }
 

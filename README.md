@@ -2,6 +2,8 @@
 
 A standalone demo of the private payments layer for **Facet Private** — a rollup that turns MetaMask into a private bank account.
 
+**[Try the live demo →](https://facet-private-demo.vercel.app/)**
+
 ## The Vision
 
 **Facet Private** is an L2 where you use MetaMask normally, but your balances and transfers are private. No new wallet, no new keys.
@@ -103,7 +105,7 @@ The adapter is like a privacy-preserving RPC node. It can see your balance, but 
 ### Prerequisites
 
 - MetaMask browser extension
-- Some Sepolia ETH ([faucet](https://sepoliafaucet.com))
+- Some Sepolia ETH
 
 ### Getting Started
 
@@ -166,7 +168,7 @@ node --version  # v20.x or later
 ### Installation
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/0xFacet/facet-private-demo.git
 cd facet-private-demo
 
 # Install all dependencies
@@ -355,6 +357,12 @@ A: Tornado uses fixed denominations and requires client-side proofs. We support 
 
 **Q: How does this relate to the full Facet Private L2?**
 A: This demo proves the core private payments mechanism. The full L2 adds contract calls with automatic unshield→execute→reshield, rollup settlement, and the full account model where EOAs have only private balances.
+
+---
+
+## Acknowledgments
+
+Architecture inspired by [Nullmask](https://nullmask.io/).
 
 ---
 

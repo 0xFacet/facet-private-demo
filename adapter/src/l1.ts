@@ -167,73 +167,6 @@ export async function getContractRoot(blockNumber?: bigint): Promise<bigint> {
 }
 
 /**
- * Get the next leaf index from the contract
- */
-export async function getNextLeafIndex(): Promise<number> {
-  const index = await l1Public.readContract({
-    address: CONTRACTS.privacyPool as Hex,
-    abi: PRIVACY_POOL_ABI,
-    functionName: 'nextLeafIndex',
-  });
-  return Number(index);
-}
-
-/**
- * Check if a nullifier has been spent
- */
-export async function isNullifierSpent(nullifier: bigint): Promise<boolean> {
-  return await l1Public.readContract({
-    address: CONTRACTS.privacyPool as Hex,
-    abi: PRIVACY_POOL_ABI,
-    functionName: 'nullifierSpent',
-    args: [nullifier],
-  }) as boolean;
-}
-
-/**
- * Check if a root is known (valid for proofs)
- */
-export async function isRootKnown(root: bigint): Promise<boolean> {
-  return await l1Public.readContract({
-    address: CONTRACTS.privacyPool as Hex,
-    abi: PRIVACY_POOL_ABI,
-    functionName: 'isKnownRoot',
-    args: [root],
-  }) as boolean;
-}
-
-/**
- * Submit a deposit to L1
- * @param owner The recipient's address as a field element
- * @param randomness Random value for commitment uniqueness
- * @param nullifierKeyHash Hash of recipient's nullifier key (binds note to their key)
- * @param amount Amount of ETH to deposit (in wei)
- * @param encryptedNote Optional encrypted note data
- */
-export async function submitDeposit(
-  owner: bigint,
-  randomness: bigint,
-  nullifierKeyHash: bigint,
-  amount: bigint,
-  encryptedNote: Hex = '0x'
-): Promise<Hex> {
-  if (!relayer) {
-    throw new Error('Relayer not configured - set RELAYER_PRIVATE_KEY');
-  }
-
-  const hash = await relayer.writeContract({
-    address: CONTRACTS.privacyPool as Hex,
-    abi: PRIVACY_POOL_ABI,
-    functionName: 'deposit',
-    args: [owner, randomness, nullifierKeyHash, encryptedNote],
-    value: amount,
-  });
-
-  console.log(`[L1] Deposit submitted: ${hash}`);
-  return hash;
-}
-
-/**
  * Submit a transfer to L1
  */
 export async function submitTransfer(
@@ -296,30 +229,6 @@ export async function submitWithdraw(
  */
 export async function waitForReceipt(hash: Hex): Promise<TransactionReceipt> {
   return await l1Public.waitForTransactionReceipt({ hash });
-}
-
-/**
- * Parse Deposit event from receipt and return leafIndex
- */
-export function parseDepositLeafIndex(receipt: TransactionReceipt): number {
-  for (const log of receipt.logs) {
-    if (log.address.toLowerCase() === (CONTRACTS.privacyPool as string).toLowerCase()) {
-      try {
-        const decoded = decodeEventLog({
-          abi: [PRIVACY_POOL_EVENTS.Deposit],
-          data: log.data,
-          topics: log.topics,
-        });
-        if (decoded.eventName === 'Deposit') {
-          const args = decoded.args as any;
-          return Number(args.leafIndex);
-        }
-      } catch {
-        // Not the Deposit event, continue
-      }
-    }
-  }
-  throw new Error('Deposit event not found in receipt');
 }
 
 /**
