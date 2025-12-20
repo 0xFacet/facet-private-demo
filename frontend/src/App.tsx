@@ -50,6 +50,12 @@ interface Status {
   section?: 'deposit' | 'transfer' | 'withdraw'
 }
 
+interface MaxSpendableInfo {
+  maxSpendable: bigint
+  totalBalance: bigint
+  isFragmented: boolean
+}
+
 const ETHERSCAN_URL = 'https://sepolia.etherscan.io/tx/'
 
 declare global {
@@ -170,6 +176,7 @@ function App() {
   const [proofStartTime, setProofStartTime] = useState<number | null>(null)
   const [elapsedTime, setElapsedTime] = useState(0)
   const [sessionLost, setSessionLost] = useState(false)
+  const [maxSpendableInfo, setMaxSpendableInfo] = useState<MaxSpendableInfo | null>(null)
 
   // Form state with status clearing
   const [depositAmount, setDepositAmountRaw] = useState('')
@@ -240,12 +247,18 @@ function App() {
       const hasSession = await checkSession()
       if (!hasSession) return
 
-      const [shielded, l1] = await Promise.all([
+      const [shielded, l1, maxSpendable] = await Promise.all([
         rpc('eth_getBalance', [account, 'latest']) as Promise<string>,
         rpc('privacy_getL1Balance', [account]) as Promise<string>,
+        rpc('privacy_getMaxSpendable', [account]) as Promise<{ maxSpendable: string; totalBalance: string; isFragmented: boolean }>,
       ])
       setBalance(formatEther(BigInt(shielded)))
       setL1Balance(formatEther(BigInt(l1)))
+      setMaxSpendableInfo({
+        maxSpendable: BigInt(maxSpendable.maxSpendable),
+        totalBalance: BigInt(maxSpendable.totalBalance),
+        isFragmented: maxSpendable.isFragmented,
+      })
     } catch (e) {
       console.error('Balance error:', e)
     }
@@ -699,14 +712,28 @@ function App() {
                 className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
               />
               <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Amount"
-                  value={transferAmount}
-                  onChange={(e) => setTransferAmount(e.target.value)}
-                  disabled={!!loading}
-                  className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
-                />
+                <div className="flex-1 relative">
+                  <input
+                    type="text"
+                    placeholder="Amount"
+                    value={transferAmount}
+                    onChange={(e) => setTransferAmount(e.target.value)}
+                    disabled={!!loading}
+                    className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 pr-14 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (maxSpendableInfo) {
+                        setTransferAmount(viemFormatEther(maxSpendableInfo.maxSpendable))
+                      }
+                    }}
+                    disabled={!!loading || !maxSpendableInfo || maxSpendableInfo.maxSpendable === 0n}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-cyan-400 hover:text-cyan-300 disabled:text-slate-500 disabled:cursor-not-allowed font-medium"
+                  >
+                    MAX
+                  </button>
+                </div>
                 <button
                   onClick={transfer}
                   disabled={!!loading}
@@ -715,6 +742,12 @@ function App() {
                   {loading === 'transfer' ? '...' : 'Send'}
                 </button>
               </div>
+              {/* Fragmentation warning for transfers */}
+              {maxSpendableInfo?.isFragmented && (
+                <div className="text-xs text-orange-400/70">
+                  Max per tx: {formatEther(maxSpendableInfo.maxSpendable)} ETH due to note fragmentation
+                </div>
+              )}
               {/* Transfer status */}
               {status?.section === 'transfer' && <StatusDisplay status={status} elapsedTime={elapsedTime} />}
             </div>
@@ -725,15 +758,39 @@ function App() {
                 <span className="text-slate-400 text-sm">Withdraw to L1</span>
                 <span className="text-slate-600 text-xs">— exit to your public wallet</span>
               </div>
+              {/* Fragmentation warning */}
+              {maxSpendableInfo?.isFragmented && (
+                <div className="bg-orange-500/10 border border-orange-500/30 rounded-lg p-2 text-xs text-orange-400">
+                  <div className="font-medium">Notes are fragmented</div>
+                  <div className="text-orange-400/80 mt-0.5">
+                    Max per tx: {formatEther(maxSpendableInfo.maxSpendable)} ETH (2 largest notes).
+                    To withdraw full balance, use multiple transactions or consolidate by sending to yourself first.
+                  </div>
+                </div>
+              )}
               <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Amount"
-                  value={withdrawAmount}
-                  onChange={(e) => setWithdrawAmount(e.target.value)}
-                  disabled={!!loading}
-                  className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
-                />
+                <div className="flex-1 relative">
+                  <input
+                    type="text"
+                    placeholder="Amount"
+                    value={withdrawAmount}
+                    onChange={(e) => setWithdrawAmount(e.target.value)}
+                    disabled={!!loading}
+                    className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 pr-14 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (maxSpendableInfo) {
+                        setWithdrawAmount(viemFormatEther(maxSpendableInfo.maxSpendable))
+                      }
+                    }}
+                    disabled={!!loading || !maxSpendableInfo || maxSpendableInfo.maxSpendable === 0n}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-cyan-400 hover:text-cyan-300 disabled:text-slate-500 disabled:cursor-not-allowed font-medium"
+                  >
+                    MAX
+                  </button>
+                </div>
                 <button
                   onClick={withdraw}
                   disabled={!!loading}

@@ -296,6 +296,9 @@ export class RpcAdapter {
       case 'privacy_getTransactionStatus':
         return this.getTransactionStatus(params[0] as string);
 
+      case 'privacy_getMaxSpendable':
+        return this.getMaxSpendable(params[0] as string);
+
       default:
         throw new Error(`Method ${method} not supported`);
     }
@@ -326,6 +329,23 @@ export class RpcAdapter {
     }
     // Return actual shielded balance (no buffer)
     return toHex(session.noteStore.getBalance());
+  }
+
+  /**
+   * Get maximum spendable amount in a single transaction
+   * Returns { maxSpendable, totalBalance, isFragmented } as hex strings
+   */
+  private getMaxSpendable(address: string): { maxSpendable: string; totalBalance: string; isFragmented: boolean } {
+    const session = this.sessions.get(address.toLowerCase());
+    if (!session) {
+      return { maxSpendable: '0x0', totalBalance: '0x0', isFragmented: false };
+    }
+    const { maxSpendable, totalBalance, isFragmented } = session.noteStore.getMaxSpendable();
+    return {
+      maxSpendable: toHex(maxSpendable),
+      totalBalance: toHex(totalBalance),
+      isFragmented,
+    };
   }
 
   private async getL1Balance(address: string): Promise<string> {

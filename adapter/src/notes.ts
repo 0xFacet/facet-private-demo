@@ -96,6 +96,33 @@ export class NoteStore {
   }
 
   /**
+   * Get the maximum spendable amount in a single transaction.
+   * Due to circuit constraints, max 2 notes can be used per tx.
+   * Returns { maxSpendable, totalBalance, isFragmented }
+   */
+  getMaxSpendable(): { maxSpendable: bigint; totalBalance: bigint; isFragmented: boolean } {
+    const unspent = this.getUnspentNotes().sort((a, b) =>
+      a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : 0
+    );
+
+    const totalBalance = unspent.reduce((sum, note) => sum + note.amount, 0n);
+
+    if (unspent.length === 0) {
+      return { maxSpendable: 0n, totalBalance: 0n, isFragmented: false };
+    }
+
+    if (unspent.length === 1) {
+      return { maxSpendable: unspent[0].amount, totalBalance, isFragmented: false };
+    }
+
+    // Max spendable is sum of 2 largest notes
+    const maxSpendable = unspent[0].amount + unspent[1].amount;
+    const isFragmented = unspent.length > 2 && maxSpendable < totalBalance;
+
+    return { maxSpendable, totalBalance, isFragmented };
+  }
+
+  /**
    * Select notes for spending (simple greedy algorithm)
    * Returns 1 or 2 notes that cover the required amount.
    * Single-note case: caller should use phantom input for second note.
