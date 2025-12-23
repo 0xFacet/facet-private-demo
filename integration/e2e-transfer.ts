@@ -430,6 +430,17 @@ async function main() {
   console.log(`Proof generated in ${proofTime.toFixed(1)}s`);
   console.log(`Proof size: ${proof.length} bytes`);
 
+  // Output for Solidity test (VerifierGas.t.sol)
+  if (process.env.DUMP_PROOF) {
+    console.log('\n--- SOLIDITY TEST DATA (paste into VerifierGas.t.sol) ---');
+    console.log(`bytes memory proof = hex"${bytesToHex(proof).slice(2)}";`);
+    console.log('bytes32[] memory publicInputs = new bytes32[](8);');
+    publicInputs.forEach((pi, i) => {
+      console.log(`publicInputs[${i}] = bytes32(uint256(0x${pi.toString(16).padStart(64, '0')}));`);
+    });
+    console.log('--- END SOLIDITY TEST DATA ---\n');
+  }
+
   // ==================== SUBMIT TO CONTRACT ====================
   console.log('\n--- Submitting to Privacy Pool ---');
 
@@ -759,7 +770,10 @@ async function main() {
   await destroyBarretenberg();
 }
 
-main().catch(async (error) => {
+main().then(() => {
+  // Force exit because bb.js worker threads don't cleanly shut down
+  process.exit(0);
+}).catch(async (error) => {
   console.error('\n✗ E2E Test FAILED:');
   console.error(error);
   await destroyBarretenberg();

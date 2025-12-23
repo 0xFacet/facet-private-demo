@@ -16,13 +16,22 @@ cd ../contracts
 forge build
 ```
 
-This script generates verifiers via bb.js with `{ keccak: true }` option, which ensures consistency with proof generation.
+This script generates verifiers via bb.js with `{ keccakZK: true }` option, which ensures consistency with proof generation.
 
-### Why keccak mode?
+### Why keccakZK mode?
 
-- Proofs generated with `{ keccak: true }` use keccak hashing (efficient in Solidity)
-- The verifier contract must be generated with the same option
-- Mismatched modes = proof verification fails on-chain
+The `keccakZK` option enables both:
+1. **Keccak hashing** - EVM has native `keccak256` opcode, making verification gas-efficient
+2. **Zero-knowledge** - Proofs don't leak private inputs (recipient, amounts, etc.)
+
+**WARNING**: Using `{ keccak: true }` instead of `{ keccakZK: true }` disables zero-knowledge! The proofs would still be valid but chain observers could extract private witness data. For a privacy pool, this defeats the entire purpose.
+
+| Option | Hash | ZK | Use Case |
+|--------|------|-----|----------|
+| `keccak: true` | Keccak | No | Rollups (succinctness only) |
+| `keccakZK: true` | Keccak | Yes | Privacy applications |
+
+The verifier contracts must be generated with the same option used for proof generation. Mismatched options = verification fails on-chain.
 
 ### Version Compatibility
 

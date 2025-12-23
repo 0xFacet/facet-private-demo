@@ -1,8 +1,9 @@
 // Worker thread for ZK proof generation
 // Runs in separate thread to avoid blocking the main event loop
 
+import os from 'os';
 import { Noir } from '@noir-lang/noir_js';
-import { UltraHonkBackend } from '@aztec/bb.js';
+import { UltraHonkBackend, type BackendOptions } from '@aztec/bb.js';
 import { readFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -10,8 +11,22 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Backend options - use keccak hash for Solidity verifier compatibility
-const BACKEND_OPTIONS = { keccak: true };
+// Backend options for proof generation
+const threads = Math.min(16, os.cpus().length);
+const bbPath = process.env.BB_PATH || `${os.homedir()}/.bb/bb`;
+
+// Check if native backend can work (needs both bb binary and kill_wrapper.sh)
+const killWrapperPath = resolve(__dirname, '../node_modules/@aztec/bb.js/scripts/kill_wrapper.sh');
+const canUseNative = existsSync(bbPath) && existsSync(killWrapperPath);
+
+const BACKEND_OPTIONS: BackendOptions = {
+  threads,
+  bbPath: canUseNative ? bbPath : undefined,
+  logger: msg => console.log(`[bb] ${msg}`),
+};
+
+// Proof generation options - keccakZK for EVM compatibility + zero-knowledge
+const PROOF_OPTIONS = { keccakZK: true };
 
 // Circuit artifact paths - try multiple locations
 function findCircuit(name: string): string {
@@ -44,8 +59,8 @@ function getTransferProver(): { backend: UltraHonkBackend; noir: Noir } {
     transferCircuit = JSON.parse(readFileSync(path, 'utf-8'));
   }
   if (!transferBackend) {
-    console.log('[Worker] Initializing transfer backend...');
-    transferBackend = new UltraHonkBackend(transferCircuit.bytecode);
+    console.log(`[Worker] Initializing transfer backend (threads=${threads}, native=${canUseNative})...`);
+    transferBackend = new UltraHonkBackend(transferCircuit.bytecode, BACKEND_OPTIONS);
   }
   if (!transferNoir) {
     transferNoir = new Noir(transferCircuit);
@@ -60,8 +75,8 @@ function getWithdrawProver(): { backend: UltraHonkBackend; noir: Noir } {
     withdrawCircuit = JSON.parse(readFileSync(path, 'utf-8'));
   }
   if (!withdrawBackend) {
-    console.log('[Worker] Initializing withdraw backend...');
-    withdrawBackend = new UltraHonkBackend(withdrawCircuit.bytecode);
+    console.log(`[Worker] Initializing withdraw backend (threads=${threads}, native=${canUseNative})...`);
+    withdrawBackend = new UltraHonkBackend(withdrawCircuit.bytecode, BACKEND_OPTIONS);
   }
   if (!withdrawNoir) {
     withdrawNoir = new Noir(withdrawCircuit);
@@ -81,8 +96,8 @@ async function generateTransferProofInternal(noirInputs: Record<string, any>): P
   console.log('[Worker] Executing transfer circuit (computing witness)...');
   const { witness } = await noir.execute(noirInputs);
 
-  console.log('[Worker] Generating transfer proof (keccak mode)...');
-  const proofData = await backend.generateProof(witness, BACKEND_OPTIONS);
+  console.log('[Worker] Generating transfer proof (keccakZK mode)...');
+  const proofData = await backend.generateProof(witness, PROOF_OPTIONS);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`[Worker] Transfer proof generated in ${elapsed}s`);
@@ -97,8 +112,8 @@ async function generateWithdrawProofInternal(noirInputs: Record<string, any>): P
   console.log('[Worker] Executing withdraw circuit (computing witness)...');
   const { witness } = await noir.execute(noirInputs);
 
-  console.log('[Worker] Generating withdraw proof (keccak mode)...');
-  const proofData = await backend.generateProof(witness, BACKEND_OPTIONS);
+  console.log('[Worker] Generating withdraw proof (keccakZK mode)...');
+  const proofData = await backend.generateProof(witness, PROOF_OPTIONS);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`[Worker] Withdraw proof generated in ${elapsed}s`);
