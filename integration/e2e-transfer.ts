@@ -759,7 +759,10 @@ async function main() {
   await destroyBarretenberg();
 }
 
-main().catch(async (error) => {
+main().then(() => {
+  // Force exit because bb.js worker threads don't cleanly shut down
+  process.exit(0);
+}).catch(async (error) => {
   console.error('\n✗ E2E Test FAILED:');
   console.error(error);
   await destroyBarretenberg();

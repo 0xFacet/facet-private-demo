@@ -1,8 +1,9 @@
 // ZK Proof generation using noir_js and bb.js
 
+import os from 'os';
 import { Noir } from '@noir-lang/noir_js';
-import { UltraHonkBackend, ProofData } from '@aztec/bb.js';
-import { readFileSync, writeFileSync } from 'fs';
+import { UltraHonkBackend, ProofData, type BackendOptions } from '@aztec/bb.js';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { Hex, hexToBytes, bytesToHex } from 'viem';
@@ -13,8 +14,22 @@ import { MerkleProof } from './merkle.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Backend options - use keccak hash for Solidity verifier compatibility
-const BACKEND_OPTIONS = { keccak: true };
+// Backend options for initialization - multi-threaded with native if available
+const threads = Math.min(16, os.cpus().length);
+const bbPath = process.env.BB_PATH || `${os.homedir()}/.bb/bb`;
+
+// Check if native backend can work (needs both bb binary and kill_wrapper.sh)
+const killWrapperPath = resolve(__dirname, '../../node_modules/@aztec/bb.js/scripts/kill_wrapper.sh');
+const canUseNative = existsSync(bbPath) && existsSync(killWrapperPath);
+
+const INIT_OPTIONS: BackendOptions = {
+  threads,
+  bbPath: canUseNative ? bbPath : undefined,
+  logger: msg => console.log(`[bb] ${msg}`),
+};
+
+// Proof generation options - keccakZK for EVM compatibility + zero-knowledge
+const PROOF_OPTIONS = { keccakZK: true };
 
 // Circuit artifact paths
 const TRANSFER_CIRCUIT_PATH = resolve(__dirname, '../../circuits/transfer/target/transfer.json');
@@ -224,8 +239,8 @@ export async function generateTransferProof(inputs: TransferCircuitInputs): Prom
   console.log('Loading transfer circuit...');
   const circuit = loadTransferCircuit();
 
-  console.log('Initializing Noir backend...');
-  const backend = new UltraHonkBackend(circuit.bytecode);
+  console.log(`Initializing Noir backend (threads=${threads}, native=${canUseNative})...`);
+  const backend = new UltraHonkBackend(circuit.bytecode, INIT_OPTIONS);
   const noir = new Noir(circuit);
 
   console.log('Building circuit inputs...');
@@ -234,8 +249,8 @@ export async function generateTransferProof(inputs: TransferCircuitInputs): Prom
   console.log('Executing circuit (computing witness)...');
   const { witness } = await noir.execute(noirInputs);
 
-  console.log('Generating proof (keccak mode for Solidity compatibility)...');
-  const proofData = await backend.generateProof(witness, BACKEND_OPTIONS);
+  console.log('Generating proof (keccakZK: EVM-compatible + zero-knowledge)...');
+  const proofData = await backend.generateProof(witness, PROOF_OPTIONS);
 
   console.log('Proof generated successfully!');
 
@@ -321,8 +336,8 @@ export async function generateWithdrawProof(inputs: WithdrawCircuitInputs): Prom
   console.log('Loading withdraw circuit...');
   const circuit = loadWithdrawCircuit();
 
-  console.log('Initializing Noir backend...');
-  const backend = new UltraHonkBackend(circuit.bytecode);
+  console.log(`Initializing Noir backend (threads=${threads}, native=${canUseNative})...`);
+  const backend = new UltraHonkBackend(circuit.bytecode, INIT_OPTIONS);
   const noir = new Noir(circuit);
 
   console.log('Building circuit inputs...');
@@ -331,8 +346,8 @@ export async function generateWithdrawProof(inputs: WithdrawCircuitInputs): Prom
   console.log('Executing circuit (computing witness)...');
   const { witness } = await noir.execute(noirInputs);
 
-  console.log('Generating proof (keccak mode for Solidity compatibility)...');
-  const proofData = await backend.generateProof(witness, BACKEND_OPTIONS);
+  console.log('Generating proof (keccakZK: EVM-compatible + zero-knowledge)...');
+  const proofData = await backend.generateProof(witness, PROOF_OPTIONS);
 
   console.log('Proof generated successfully!');
 
@@ -400,7 +415,7 @@ export function extractSignatureFromTx(
 
 /**
  * Generate Solidity verifier contract via bb.js
- * This ensures consistency with proof generation (both use keccak mode)
+ * This ensures consistency with proof generation (both use keccakZK mode)
  */
 export async function generateSolidityVerifier(circuitPath: string, outputPath: string, contractName?: string): Promise<void> {
   console.log(`Loading circuit from ${circuitPath}...`);
@@ -408,13 +423,13 @@ export async function generateSolidityVerifier(circuitPath: string, outputPath: 
   const circuit = JSON.parse(circuitJson);
 
   console.log('Initializing backend...');
-  const backend = new UltraHonkBackend(circuit.bytecode);
+  const backend = new UltraHonkBackend(circuit.bytecode, INIT_OPTIONS);
 
-  console.log('Getting verification key (keccak mode)...');
-  const vk = await backend.getVerificationKey(BACKEND_OPTIONS);
+  console.log('Getting verification key (keccakZK mode)...');
+  const vk = await backend.getVerificationKey(PROOF_OPTIONS);
 
   console.log('Generating Solidity verifier...');
-  let verifierSol = await backend.getSolidityVerifier(vk, BACKEND_OPTIONS);
+  let verifierSol = await backend.getSolidityVerifier(vk, PROOF_OPTIONS);
 
   // Rename contract if specified
   if (contractName) {
