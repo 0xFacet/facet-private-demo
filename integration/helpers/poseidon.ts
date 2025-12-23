@@ -1,5 +1,8 @@
 // Poseidon hash implementation using circomlibjs
 // This must match the Solidity and Noir implementations
+//
+// CRITICAL: Uses ONLY PoseidonT3 (2-input) with binary tree structure
+// This matches the contract and circuit implementations.
 
 import { buildPoseidon } from 'circomlibjs';
 
@@ -34,41 +37,39 @@ export function poseidon2(inputs: [bigint, bigint]): bigint {
   return BigInt(poseidon.F.toString(result));
 }
 
+// ========================== BINARY TREE HASH FUNCTIONS ==========================
+// ALL multi-input hashes use binary tree structure with poseidon2
+// This matches circuit and contract implementations
+
 /**
- * Hash 3 field elements (equivalent to PoseidonT4 in Solidity)
+ * Hash 3 inputs via binary tree: hash(hash(a,b), c)
  */
-export function poseidon3(inputs: [bigint, bigint, bigint]): bigint {
-  const poseidon = getPoseidon();
-  const result = poseidon(inputs);
-  return BigInt(poseidon.F.toString(result));
+export function hash3(inputs: [bigint, bigint, bigint]): bigint {
+  const h_ab = poseidon2([inputs[0], inputs[1]]);
+  return poseidon2([h_ab, inputs[2]]);
 }
 
 /**
- * Hash 4 field elements (equivalent to PoseidonT5 in Solidity)
- * Used for note commitments: poseidon(amount, owner, randomness, nullifierKeyHash)
+ * Hash 4 inputs via binary tree: hash(hash(a,b), hash(c,d))
+ * Used for commitments, nullifiers, etc.
  */
-export function poseidon4(inputs: [bigint, bigint, bigint, bigint]): bigint {
-  const poseidon = getPoseidon();
-  const result = poseidon(inputs);
-  return BigInt(poseidon.F.toString(result));
+export function hash4(inputs: [bigint, bigint, bigint, bigint]): bigint {
+  const h_ab = poseidon2([inputs[0], inputs[1]]);
+  const h_cd = poseidon2([inputs[2], inputs[3]]);
+  return poseidon2([h_ab, h_cd]);
 }
 
-/**
- * Hash 5 field elements (equivalent to PoseidonT6 in Solidity)
- * Used for intent nullifiers: poseidon(signer, chainId, nonce, to, value)
- */
-export function poseidon5(inputs: [bigint, bigint, bigint, bigint, bigint]): bigint {
-  const poseidon = getPoseidon();
-  const result = poseidon(inputs);
-  return BigInt(poseidon.F.toString(result));
-}
+// ========================== DOMAIN SEPARATORS ==========================
+// Must match circuits/common/src/constants.nr and adapter/src/crypto/embedded-curve.ts
 
-// Domain separator for nullifier key hash computation (must match circuit constant)
-const NULLIFIER_KEY_DOMAIN = 1n;
+const NULLIFIER_KEY_DOMAIN = 0x0d5e6f7890abcdef34567890abcdef1234567890abcdef1234567890abcdefn;
+const NULLIFIER_DOMAIN = 0x0e6f7890abcdef0134567890abcdef1234567890abcdef1234567890abcdefn;
+const INTENT_DOMAIN = 0x0f7890abcdef012345678901abcdef1234567890abcdef1234567890abcdefn;
+const PHANTOM_NULLIFIER_DOMAIN = 0x107890abcdef012345678901abcdef1234567890abcdef1234567890abcde0n;
 
 /**
  * Compute the nullifier key hash from a nullifier key
- * nullifierKeyHash = poseidon(nullifierKey, DOMAIN)
+ * nkHash = hash(nullifierKey, NULLIFIER_KEY_DOMAIN)
  * This is stored in the registry and bound to note commitments
  */
 export function computeNullifierKeyHash(nullifierKey: bigint): bigint {
@@ -77,25 +78,34 @@ export function computeNullifierKeyHash(nullifierKey: bigint): bigint {
 
 /**
  * Compute a note commitment
- * commitment = poseidon(amount, ownerAddress, randomness, nullifierKeyHash)
- * The nullifierKeyHash binds the note to a specific nullifier key for spending
+ * commitment = hash4([amount, owner, randomness, nullifierKeyHash])
+ * Uses binary tree structure: hash(hash(amount, owner), hash(randomness, nkHash))
  */
 export function computeCommitment(amount: bigint, owner: bigint, randomness: bigint, nullifierKeyHash: bigint): bigint {
-  return poseidon4([amount, owner, randomness, nullifierKeyHash]);
+  return hash4([amount, owner, randomness, nullifierKeyHash]);
 }
 
 /**
  * Compute a nullifier for a note
- * nullifier = poseidon(commitment, nullifierKey)
- * nullifierKey is bound to the commitment via nullifierKeyHash, making nullifiers deterministic per note
+ * nullifier = hash4([NULLIFIER_DOMAIN, nullifierKey, leafIndex, randomness])
+ * Includes domain separator and leaf index for uniqueness
  */
-export function computeNullifier(commitment: bigint, nullifierKey: bigint): bigint {
-  return poseidon2([commitment, nullifierKey]);
+export function computeNullifier(nullifierKey: bigint, leafIndex: number, randomness: bigint): bigint {
+  return hash4([NULLIFIER_DOMAIN, nullifierKey, BigInt(leafIndex), randomness]);
+}
+
+/**
+ * Compute phantom nullifier for zero-amount inputs
+ * phantom = hash4([PHANTOM_NULLIFIER_DOMAIN, nullifierKey, txNonce, 0])
+ * Prevents nullifier poisoning attacks
+ */
+export function computePhantomNullifier(nullifierKey: bigint, txNonce: bigint): bigint {
+  return hash4([PHANTOM_NULLIFIER_DOMAIN, nullifierKey, txNonce, 0n]);
 }
 
 /**
  * Compute an intent nullifier for transfers and withdrawals
- * intentNullifier = poseidon(nullifierKey, chainId, nonce)
+ * intentNullifier = hash4([INTENT_DOMAIN, nullifierKey, chainId, nonce])
  *
  * Uses secret nullifier_key for privacy (prevents dictionary attacks).
  * One nonce = one spend, regardless of tx content.
@@ -105,5 +115,5 @@ export function computeIntentNullifier(
   chainId: bigint,
   nonce: bigint
 ): bigint {
-  return poseidon3([nullifierKey, chainId, nonce]);
+  return hash4([INTENT_DOMAIN, nullifierKey, chainId, nonce]);
 }

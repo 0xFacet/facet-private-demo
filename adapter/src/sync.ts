@@ -25,13 +25,15 @@ interface DepositEvent {
   txHash: Hex;
 }
 
+type Cipher5 = readonly [bigint, bigint, bigint, bigint, bigint];
+
 interface TransferEvent {
   type: 'transfer';
   nullifiers: [bigint, bigint];
   commitments: [bigint, bigint];
   leafIndices: [number, number];
   intentNullifier: bigint;
-  encryptedNotes: [Hex, Hex];
+  encryptedNotes: [Cipher5, Cipher5];
   blockNumber: bigint;
   logIndex: number;
   txHash: Hex;
@@ -45,7 +47,7 @@ interface WithdrawEvent {
   intentNullifier: bigint;
   recipient: Hex;
   amount: bigint;
-  encryptedChange: Hex;
+  encryptedChange: Cipher5;
   blockNumber: bigint;
   logIndex: number;
   txHash: Hex;
@@ -86,13 +88,13 @@ export async function syncFromChain(
     }),
     l1Public.getLogs({
       address: poolAddress,
-      event: parseAbiItem('event Transfer(uint256[2] nullifiers, uint256[2] commitments, uint256[2] leafIndices, uint256 intentNullifier, bytes[2] encryptedNotes)'),
+      event: parseAbiItem('event Transfer(uint256[2] nullifiers, uint256[2] commitments, uint256[2] leafIndices, uint256 intentNullifier, uint256[5][2] encryptedNotes)'),
       fromBlock: DEPLOY_BLOCK,
       toBlock,
     }),
     l1Public.getLogs({
       address: poolAddress,
-      event: parseAbiItem('event Withdrawal(uint256[2] nullifiers, uint256 changeCommitment, uint256 changeLeafIndex, uint256 intentNullifier, address indexed recipient, uint256 amount, bytes encryptedChange)'),
+      event: parseAbiItem('event Withdrawal(uint256[2] nullifiers, uint256 changeCommitment, uint256 changeLeafIndex, uint256 intentNullifier, address indexed recipient, uint256 amount, uint256[5] encryptedChange)'),
       fromBlock: DEPLOY_BLOCK,
       toBlock,
     }),
@@ -205,10 +207,9 @@ export async function syncFromChain(
   const contractRoot = await getContractRoot(toBlock);
 
   if (tempRoot !== contractRoot) {
-    console.error(`[Sync] WARNING: Root mismatch! Keeping existing state.`);
-    console.error(`  Computed: ${tempRoot.toString(16)}`);
-    console.error(`  Contract: ${contractRoot.toString(16)}`);
-    return; // Don't update - keep existing state
+    const msg = `Pool root mismatch! Computed: 0x${tempRoot.toString(16)}, Contract: 0x${contractRoot.toString(16)}`;
+    console.error(`[Sync] ${msg}`);
+    throw new Error(msg);
   }
 
   // Root verified! Now swap data atomically
@@ -276,7 +277,7 @@ export async function getTransferEvents(): Promise<TransferEvent[]> {
 
   const logs = await l1Public.getLogs({
     address: poolAddress,
-    event: parseAbiItem('event Transfer(uint256[2] nullifiers, uint256[2] commitments, uint256[2] leafIndices, uint256 intentNullifier, bytes[2] encryptedNotes)'),
+    event: parseAbiItem('event Transfer(uint256[2] nullifiers, uint256[2] commitments, uint256[2] leafIndices, uint256 intentNullifier, uint256[5][2] encryptedNotes)'),
     fromBlock: DEPLOY_BLOCK,
     toBlock: 'latest',
   });
@@ -305,7 +306,7 @@ export async function getWithdrawEvents(): Promise<WithdrawEvent[]> {
 
   const logs = await l1Public.getLogs({
     address: poolAddress,
-    event: parseAbiItem('event Withdrawal(uint256[2] nullifiers, uint256 changeCommitment, uint256 changeLeafIndex, uint256 intentNullifier, address indexed recipient, uint256 amount, bytes encryptedChange)'),
+    event: parseAbiItem('event Withdrawal(uint256[2] nullifiers, uint256 changeCommitment, uint256 changeLeafIndex, uint256 intentNullifier, address indexed recipient, uint256 amount, uint256[5] encryptedChange)'),
     fromBlock: DEPLOY_BLOCK,
     toBlock: 'latest',
   });

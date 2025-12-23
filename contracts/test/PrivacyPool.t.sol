@@ -6,8 +6,6 @@ import {PrivacyPool} from "../src/PrivacyPool.sol";
 import {RecipientRegistry} from "../src/RecipientRegistry.sol";
 import {MockVerifier} from "../src/MockVerifier.sol";
 import {PoseidonT3} from "poseidon-solidity/PoseidonT3.sol";
-import {PoseidonT4} from "poseidon-solidity/PoseidonT4.sol";
-import {PoseidonT5} from "poseidon-solidity/PoseidonT5.sol";
 
 contract PrivacyPoolTest is Test {
     PrivacyPool public pool;
@@ -21,8 +19,15 @@ contract PrivacyPoolTest is Test {
     uint256 aliceNkHash = 12345678901234567890;
     uint256 bobNkHash = 98765432109876543210;
 
+    // Sample Grumpkin curve points for testing
+    // These are valid points on y^2 = x^3 - 17 (Grumpkin curve)
+    // Generator point: (1, sqrt(1-17) mod p)
+    uint256 constant GRUMPKIN_GEN_X = 1;
+    uint256 constant GRUMPKIN_GEN_Y = 17631683881184975370165255887551781615748388533673675138860;
+
     function setUp() public {
-        registry = new RecipientRegistry();
+        // Test contract is the trusted relayer for auto-registration
+        registry = new RecipientRegistry(address(this));
         verifier = new MockVerifier();
         pool = new PrivacyPool(address(verifier), address(verifier), address(registry));
 
@@ -34,39 +39,108 @@ contract PrivacyPoolTest is Test {
     // ==================== Registry Tests ====================
 
     function test_Registry_Register() public {
-        // 33-byte compressed public key: 0x02 prefix + 32-byte x-coordinate
-        bytes memory pkEnc = abi.encodePacked(bytes1(0x02), bytes32(uint256(123456)));
+        // Grumpkin curve point (x, y)
+        uint256[2] memory pkEnc = [GRUMPKIN_GEN_X, GRUMPKIN_GEN_Y];
 
-        // World-writable: anyone can register for anyone
-        registry.register(alice, pkEnc, aliceNkHash);
+        // Bound to msg.sender
+        vm.prank(alice);
+        registry.register(pkEnc, aliceNkHash);
 
         assertTrue(registry.isRegistered(alice));
-        assertEq(keccak256(registry.getEncryptionKey(alice)), keccak256(pkEnc));
+        uint256[2] memory storedKey = registry.getEncryptionKey(alice);
+        assertEq(storedKey[0], pkEnc[0]);
+        assertEq(storedKey[1], pkEnc[1]);
         assertEq(registry.getNullifierKeyHash(alice), aliceNkHash);
     }
 
     function test_Registry_CannotRegisterTwice() public {
-        bytes memory pkEnc1 = abi.encodePacked(bytes1(0x02), bytes32(uint256(123456)));
-        bytes memory pkEnc2 = abi.encodePacked(bytes1(0x03), bytes32(uint256(789012)));
+        uint256[2] memory pkEnc1 = [GRUMPKIN_GEN_X, GRUMPKIN_GEN_Y];
 
-        registry.register(alice, pkEnc1, aliceNkHash);
+        vm.prank(alice);
+        registry.register(pkEnc1, aliceNkHash);
 
-        vm.expectRevert("Already registered");
-        registry.register(alice, pkEnc2, aliceNkHash);
+        vm.prank(alice);
+        vm.expectRevert(RecipientRegistry.AlreadyRegistered.selector);
+        registry.register(pkEnc1, aliceNkHash);
     }
 
-    function test_Registry_CannotRegisterInvalidLength() public {
-        bytes memory invalidKey = abi.encodePacked(bytes32(uint256(123456))); // 32 bytes, not 33
+    function test_Registry_CannotRegisterInvalidPoint() public {
+        // Point not on curve (random values)
+        uint256[2] memory invalidKey = [uint256(123456), uint256(789012)];
 
-        vm.expectRevert("Invalid public key length");
-        registry.register(alice, invalidKey, aliceNkHash);
+        vm.prank(alice);
+        vm.expectRevert(RecipientRegistry.InvalidPoint.selector);
+        registry.register(invalidKey, aliceNkHash);
     }
 
-    function test_Registry_CannotRegisterInvalidPrefix() public {
-        bytes memory invalidKey = abi.encodePacked(bytes1(0x04), bytes32(uint256(123456))); // invalid prefix
+    function test_Registry_CannotRegisterIdentityPoint() public {
+        // Identity point (0, 0)
+        uint256[2] memory identityKey = [uint256(0), uint256(0)];
 
-        vm.expectRevert("Invalid public key prefix");
-        registry.register(alice, invalidKey, aliceNkHash);
+        vm.prank(alice);
+        vm.expectRevert(RecipientRegistry.InvalidPoint.selector);
+        registry.register(identityKey, aliceNkHash);
+    }
+
+    function test_Registry_ZerosInitializedCorrectly() public view {
+        // zeros[0] should be 0, NOT hash(0,0)
+        assertEq(registry.getZero(0), 0);
+
+        // zeros[1] should be hash(0, 0)
+        assertEq(registry.getZero(1), PoseidonT3.hash([uint256(0), uint256(0)]));
+    }
+
+    function test_Registry_RootTracking() public {
+        uint256[2] memory pkEnc = [GRUMPKIN_GEN_X, GRUMPKIN_GEN_Y];
+
+        // Initial root should be valid
+        uint256 initialRoot = registry.getLatestRoot();
+        assertTrue(registry.isKnownRoot(initialRoot));
+
+        // Register a user
+        vm.prank(alice);
+        registry.register(pkEnc, aliceNkHash);
+
+        // New root should be valid
+        uint256 newRoot = registry.getLatestRoot();
+        assertTrue(registry.isKnownRoot(newRoot));
+
+        // Old root should still be valid (unbounded)
+        assertTrue(registry.isKnownRoot(initialRoot));
+    }
+
+    function test_Registry_RegisterFor() public {
+        uint256[2] memory pkEnc = [GRUMPKIN_GEN_X, GRUMPKIN_GEN_Y];
+
+        // Test contract is the relayer, so this should work
+        uint256 leafIndex = registry.registerFor(alice, pkEnc, aliceNkHash);
+
+        assertTrue(registry.isRegistered(alice));
+        assertEq(registry.getLeafIndex(alice), leafIndex);
+        uint256[2] memory storedKey = registry.getEncryptionKey(alice);
+        assertEq(storedKey[0], pkEnc[0]);
+        assertEq(storedKey[1], pkEnc[1]);
+        assertEq(registry.getNullifierKeyHash(alice), aliceNkHash);
+    }
+
+    function test_Registry_RegisterFor_RevertNotRelayer() public {
+        uint256[2] memory pkEnc = [GRUMPKIN_GEN_X, GRUMPKIN_GEN_Y];
+
+        // Alice is not the relayer
+        vm.prank(alice);
+        vm.expectRevert(RecipientRegistry.NotRelayer.selector);
+        registry.registerFor(bob, pkEnc, bobNkHash);
+    }
+
+    function test_Registry_RegisterFor_RevertAlreadyRegistered() public {
+        uint256[2] memory pkEnc = [GRUMPKIN_GEN_X, GRUMPKIN_GEN_Y];
+
+        // First registration should work
+        registry.registerFor(alice, pkEnc, aliceNkHash);
+
+        // Second registration should fail
+        vm.expectRevert(RecipientRegistry.AlreadyRegistered.selector);
+        registry.registerFor(alice, pkEnc, aliceNkHash);
     }
 
     // ==================== Pool Initialization Tests ====================
@@ -80,9 +154,8 @@ contract PrivacyPoolTest is Test {
         // Check initial state
         assertEq(pool.nextLeafIndex(), 0);
 
-        // Check zeros are initialized
-        uint256 zero0 = pool.getZero(0);
-        assertEq(zero0, PoseidonT3.hash([uint256(0), uint256(0)]));
+        // Check zeros[0] = 0 (CRITICAL - must match registry)
+        assertEq(pool.getZero(0), 0);
 
         // Check initial root
         uint256 initialRoot = pool.getLastRoot();
@@ -92,8 +165,6 @@ contract PrivacyPoolTest is Test {
     // ==================== Deposit Tests ====================
 
     function test_Deposit_Basic() public {
-        // New deposit signature: deposit(owner, randomness, nullifierKeyHash, encryptedNote)
-        // Contract computes commitment on-chain from msg.value
         uint256 amount = 1 ether;
         uint256 owner = uint256(uint160(alice));
         uint256 randomness = 12345;
@@ -137,8 +208,6 @@ contract PrivacyPoolTest is Test {
     }
 
     function test_Deposit_CommitmentComputedOnChain() public {
-        // This test verifies the security fix: commitment is computed on-chain
-        // so an attacker cannot deposit 1 wei with a commitment encoding 1 ETH
         uint256 amount = 1 ether;
         uint256 owner = uint256(uint160(alice));
         uint256 randomness = 12345;
@@ -148,37 +217,46 @@ contract PrivacyPoolTest is Test {
 
         // The commitment stored in the tree should be poseidon(amount, owner, randomness, nullifierKeyHash)
         // computed using the actual msg.value (1 ether), not any attacker-supplied value
-        // This prevents fake-amount attacks
         assertEq(pool.nextLeafIndex(), 1);
     }
 
     // ==================== Transfer Tests (with MockVerifier) ====================
 
     function test_Transfer_WithMockVerifier() public {
+        // First register users in registry
+        uint256[2] memory alicePk = [GRUMPKIN_GEN_X, GRUMPKIN_GEN_Y];
+        vm.prank(alice);
+        registry.register(alicePk, aliceNkHash);
+
         // Setup: deposit twice so we have 2 notes
         vm.startPrank(alice);
         pool.deposit{value: 1 ether}(uint256(uint160(alice)), 111, aliceNkHash, "");
         pool.deposit{value: 1 ether}(uint256(uint160(alice)), 222, aliceNkHash, "");
         vm.stopPrank();
 
-        // Get current root
+        // Get current roots
         uint256 merkleRoot = pool.getLastRoot();
+        uint256 registryRoot = registry.getLatestRoot();
 
         // Create output commitments
         uint256 output1 = _computeCommitment(0.5 ether, uint256(uint160(bob)), 333, bobNkHash);
         uint256 output2 = _computeCommitment(1.5 ether, uint256(uint160(alice)), 444, aliceNkHash);
 
-        // Create nullifiers (would be poseidon(commitment, nullifierKey) in reality)
+        // Create nullifiers
         uint256[2] memory nullifiers = [uint256(1), uint256(2)];
         uint256[2] memory outputs = [output1, output2];
         uint256 intentNullifier = 12345;
 
-        bytes[2] memory encryptedNotes = [bytes("note1"), bytes("note2")];
+        // In-circuit encrypted notes (5 field elements each)
+        uint256[5][2] memory encryptedNotes;
+        encryptedNotes[0] = [uint256(1), uint256(2), uint256(3), uint256(4), uint256(5)];
+        encryptedNotes[1] = [uint256(6), uint256(7), uint256(8), uint256(9), uint256(10)];
 
         // Call transfer (MockVerifier will accept)
         pool.transfer(
             "", // empty proof
             merkleRoot,
+            registryRoot,
             nullifiers,
             outputs,
             intentNullifier,
@@ -195,6 +273,11 @@ contract PrivacyPoolTest is Test {
     }
 
     function test_Transfer_RevertDoubleSpend() public {
+        // First register alice
+        uint256[2] memory alicePk = [GRUMPKIN_GEN_X, GRUMPKIN_GEN_Y];
+        vm.prank(alice);
+        registry.register(alicePk, aliceNkHash);
+
         // Setup deposits
         vm.startPrank(alice);
         pool.deposit{value: 1 ether}(uint256(uint160(alice)), 111, aliceNkHash, "");
@@ -202,21 +285,56 @@ contract PrivacyPoolTest is Test {
         vm.stopPrank();
 
         uint256 merkleRoot = pool.getLastRoot();
+        uint256 registryRoot = registry.getLatestRoot();
         uint256[2] memory nullifiers = [uint256(1), uint256(2)];
         uint256[2] memory outputs = [uint256(100), uint256(200)];
-        bytes[2] memory notes;
+        uint256[5][2] memory notes;
 
         // First transfer succeeds
-        pool.transfer("", merkleRoot, nullifiers, outputs, 1000, notes);
+        pool.transfer("", merkleRoot, registryRoot, nullifiers, outputs, 1000, notes);
 
         // Second transfer with same nullifiers fails
         vm.expectRevert(PrivacyPool.NullifierAlreadySpent.selector);
-        pool.transfer("", merkleRoot, nullifiers, [uint256(300), uint256(400)], 1001, notes);
+        pool.transfer("", merkleRoot, registryRoot, nullifiers, [uint256(300), uint256(400)], 1001, notes);
+    }
+
+    function test_Transfer_RevertUnknownRegistryRoot() public {
+        // Setup deposits
+        vm.prank(alice);
+        pool.deposit{value: 1 ether}(uint256(uint160(alice)), 111, aliceNkHash, "");
+
+        uint256 merkleRoot = pool.getLastRoot();
+        uint256 invalidRegistryRoot = 999999; // Not a known root
+        uint256[2] memory nullifiers = [uint256(1), uint256(2)];
+        uint256[2] memory outputs = [uint256(100), uint256(200)];
+        uint256[5][2] memory notes;
+
+        vm.expectRevert(PrivacyPool.UnknownRegistryRoot.selector);
+        pool.transfer("", merkleRoot, invalidRegistryRoot, nullifiers, outputs, 1000, notes);
+    }
+
+    function test_Transfer_RevertNonCanonicalField() public {
+        uint256 merkleRoot = pool.getLastRoot();
+        uint256 registryRoot = registry.getLatestRoot();
+        uint256 tooLarge = pool.FIELD_SIZE() + 1;
+
+        uint256[2] memory nullifiers = [uint256(1), uint256(2)];
+        uint256[2] memory outputs = [uint256(100), uint256(200)];
+        uint256[5][2] memory notes;
+
+        // Non-canonical merkle root
+        vm.expectRevert(PrivacyPool.NonCanonicalField.selector);
+        pool.transfer("", tooLarge, registryRoot, nullifiers, outputs, 1000, notes);
     }
 
     // ==================== Withdrawal Tests ====================
 
     function test_Withdraw_WithMockVerifier() public {
+        // First register alice
+        uint256[2] memory alicePk = [GRUMPKIN_GEN_X, GRUMPKIN_GEN_Y];
+        vm.prank(alice);
+        registry.register(alicePk, aliceNkHash);
+
         // Setup: deposit
         vm.startPrank(alice);
         pool.deposit{value: 2 ether}(uint256(uint160(alice)), 111, aliceNkHash, "");
@@ -224,21 +342,26 @@ contract PrivacyPoolTest is Test {
         vm.stopPrank();
 
         uint256 merkleRoot = pool.getLastRoot();
+        uint256 registryRoot = registry.getLatestRoot();
         uint256[2] memory nullifiers = [uint256(10), uint256(20)];
         uint256 changeCommitment = _computeCommitment(1 ether, uint256(uint160(alice)), 555, aliceNkHash);
 
         uint256 bobBalanceBefore = bob.balance;
 
+        // Encrypted change note (5 field elements)
+        uint256[5] memory encryptedChange = [uint256(1), uint256(2), uint256(3), uint256(4), uint256(5)];
+
         // Withdraw 2 ETH to bob, 1 ETH change back to alice
         pool.withdraw(
             "",
             merkleRoot,
+            registryRoot,
             nullifiers,
             changeCommitment,
             30000, // intent nullifier
             bob, // recipient
             2 ether, // amount
-            "" // encrypted change
+            encryptedChange
         );
 
         // Check bob received ETH
@@ -250,6 +373,39 @@ contract PrivacyPoolTest is Test {
         // Check nullifiers spent
         assertTrue(pool.nullifierSpent(10));
         assertTrue(pool.nullifierSpent(20));
+    }
+
+    function test_Withdraw_RevertNonCanonicalAmount() public {
+        // First register and deposit so we have valid roots
+        uint256[2] memory alicePk = [GRUMPKIN_GEN_X, GRUMPKIN_GEN_Y];
+        vm.prank(alice);
+        registry.register(alicePk, aliceNkHash);
+
+        vm.prank(alice);
+        pool.deposit{value: 10 ether}(uint256(uint160(alice)), 111, aliceNkHash, "");
+
+        uint256 merkleRoot = pool.getLastRoot();
+        uint256 registryRoot = registry.getLatestRoot();
+        uint256[2] memory nullifiers = [uint256(10), uint256(20)];
+        uint256 changeCommitment = 12345;
+        uint256[5] memory encryptedChange;
+
+        // Cache FIELD_SIZE before expectRevert (which consumes next external call)
+        uint256 fieldSize = pool.FIELD_SIZE();
+
+        // Amount >= FIELD_SIZE should revert with NonCanonicalField
+        vm.expectRevert(PrivacyPool.NonCanonicalField.selector);
+        pool.withdraw(
+            "",
+            merkleRoot,
+            registryRoot,
+            nullifiers,
+            changeCommitment,
+            30000,
+            bob,
+            fieldSize, // CRITICAL: non-canonical amount (>= FIELD_SIZE)
+            encryptedChange
+        );
     }
 
     // ==================== Admin Tests ====================
@@ -276,7 +432,10 @@ contract PrivacyPoolTest is Test {
         uint256 randomness,
         uint256 nullifierKeyHash
     ) internal pure returns (uint256) {
-        // Use PoseidonT5 for 4 inputs: (amount, owner, randomness, nullifierKeyHash)
-        return PoseidonT5.hash([amount, owner, randomness, nullifierKeyHash]);
+        // Use binary tree hashing with PoseidonT3 to match circuit and contract:
+        // hash(hash(amount, owner), hash(randomness, nkHash))
+        uint256 h1 = PoseidonT3.hash([amount, owner]);
+        uint256 h2 = PoseidonT3.hash([randomness, nullifierKeyHash]);
+        return PoseidonT3.hash([h1, h2]);
     }
 }

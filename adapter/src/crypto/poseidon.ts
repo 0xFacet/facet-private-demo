@@ -1,5 +1,9 @@
 // Poseidon hash implementation using circomlibjs
 // This must match the Solidity and Noir implementations
+//
+// CRITICAL: We use binary tree hashing for 3+ inputs to ensure
+// cross-language consistency (only need PoseidonT3).
+// All higher-arity hashes are composed from poseidon2.
 
 import { buildPoseidon } from 'circomlibjs';
 
@@ -27,6 +31,7 @@ function getPoseidon() {
 
 /**
  * Hash 2 field elements (equivalent to PoseidonT3 in Solidity)
+ * This is the base primitive - all other hashes use binary tree composition.
  */
 export function poseidon2(inputs: [bigint, bigint]): bigint {
   const poseidon = getPoseidon();
@@ -34,66 +39,3 @@ export function poseidon2(inputs: [bigint, bigint]): bigint {
   return BigInt(poseidon.F.toString(result));
 }
 
-/**
- * Hash 3 field elements (equivalent to PoseidonT4 in Solidity)
- */
-export function poseidon3(inputs: [bigint, bigint, bigint]): bigint {
-  const poseidon = getPoseidon();
-  const result = poseidon(inputs);
-  return BigInt(poseidon.F.toString(result));
-}
-
-/**
- * Hash 4 field elements (equivalent to PoseidonT5 in Solidity)
- * Used for note commitments: poseidon(amount, owner, randomness, nullifierKeyHash)
- */
-export function poseidon4(inputs: [bigint, bigint, bigint, bigint]): bigint {
-  const poseidon = getPoseidon();
-  const result = poseidon(inputs);
-  return BigInt(poseidon.F.toString(result));
-}
-
-// Domain separator for nullifier key hash computation (must match circuit constant)
-const NULLIFIER_KEY_DOMAIN = 1n;
-
-/**
- * Compute the nullifier key hash from a nullifier key
- * nullifierKeyHash = poseidon(nullifierKey, DOMAIN)
- * This is stored in the registry and bound to note commitments
- */
-export function computeNullifierKeyHash(nullifierKey: bigint): bigint {
-  return poseidon2([nullifierKey, NULLIFIER_KEY_DOMAIN]);
-}
-
-/**
- * Compute a note commitment
- * commitment = poseidon(amount, ownerAddress, randomness, nullifierKeyHash)
- * The nullifierKeyHash binds the note to a specific nullifier key for spending
- */
-export function computeCommitment(amount: bigint, owner: bigint, randomness: bigint, nullifierKeyHash: bigint): bigint {
-  return poseidon4([amount, owner, randomness, nullifierKeyHash]);
-}
-
-/**
- * Compute a nullifier for a note
- * nullifier = poseidon(commitment, nullifierKey)
- * nullifierKey is bound to the commitment via nullifierKeyHash, making nullifiers deterministic per note
- */
-export function computeNullifier(commitment: bigint, nullifierKey: bigint): bigint {
-  return poseidon2([commitment, nullifierKey]);
-}
-
-/**
- * Compute an intent nullifier for transfers and withdrawals
- * intentNullifier = poseidon(nullifierKey, chainId, nonce)
- *
- * Uses secret nullifier_key for privacy (prevents dictionary attacks).
- * One nonce = one spend, regardless of tx content.
- */
-export function computeIntentNullifier(
-  nullifierKey: bigint,
-  chainId: bigint,
-  nonce: bigint
-): bigint {
-  return poseidon3([nullifierKey, chainId, nonce]);
-}

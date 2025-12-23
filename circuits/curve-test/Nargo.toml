@@ -1,0 +1,6 @@
+[package]
+name = "curve_test"
+type = "bin"
+authors = [""]
+
+[dependencies]

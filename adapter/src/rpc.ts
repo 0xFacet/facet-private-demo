@@ -26,22 +26,49 @@ import {
 } from './config.js';
 import { NoteStore, SessionKeys, createNoteWithRandomness, type Note } from './notes.js';
 import { MerkleTree } from './merkle.js';
-import { initPoseidon, computeCommitment, computeNullifier, computeNullifierKeyHash, computeIntentNullifier } from './crypto/poseidon.js';
-import { deriveEncryptionKeypair, encryptNoteData, decryptNoteData, pubKeyToHex, hexToPubKey } from './crypto/ecies.js';
+import { initPoseidon } from './crypto/poseidon.js';
+import {
+  computeCommitment,
+  computeNullifier,
+  computePhantomNullifier,
+  computeNullifierKeyHash,
+  computeIntentNullifier,
+  deriveEncSeed,
+  decryptSelfNote,
+  tryDecryptNoteWithCommitmentAsync,
+  encryptNoteEcdhAsync,
+  encryptNoteSelfAsync,
+  ciphertextHash10,
+  ciphertextHash5,
+  type Cipher5,
+  type Point,
+  type DecryptedNote,
+  FIELD_SIZE as EMBEDDED_FIELD_SIZE,
+} from './crypto/embedded-curve.js';
+import {
+  initGrumpkin,
+  scalarMul as grumpkinScalarMul,
+  fixedBaseMul as grumpkinFixedBaseMul,
+  verifyGrumpkin,
+} from './crypto/grumpkin.js';
 import {
   l1Public,
   submitTransfer,
   submitWithdraw,
   waitForReceipt,
   getRelayerAddress,
-  registerEncryptionKey,
   getEncryptionKey,
   getNullifierKeyHash as getRegistryNullifierKeyHash,
   isUserRegistered,
+  getRegistryEntry,
+  getRegistryRoot,
   parseTransferLeafIndices,
   parseWithdrawLeafIndex,
+  registerUserOnL1,
 } from './l1.js';
 import { syncFromChain, needsRefresh } from './sync.js';
+import { RegistryTree, type RegistryProof as RegistryTreeProof } from './registry-tree.js';
+import { syncRegistryFromChain, registryNeedsRefresh } from './registry-sync.js';
 import {
   generateTransferProofWorker,
   generateWithdrawProofWorker,
@@ -105,7 +132,8 @@ export class RpcAdapter {
     logger: false,
   });
   private sessions: Map<string, UserSession> = new Map();
-  private merkleTree: MerkleTree;
+  private merkleTree!: MerkleTree;  // Initialized in initialize() after Poseidon
+  private registryTree!: RegistryTree;  // Initialized in initialize() after Poseidon
   private spentNullifiers: Set<bigint> = new Set();
   private usedIntents: Set<bigint> = new Set();
   private txHashMapping: Map<string, string> = new Map(); // virtual -> L1
@@ -114,7 +142,8 @@ export class RpcAdapter {
   private initialized = false;
 
   constructor() {
-    this.merkleTree = new MerkleTree();
+    // Trees are created in initialize() after Poseidon is initialized
+    // (MerkleTree/RegistryTree constructors call poseidon2 to compute zeros)
   }
 
   /**
@@ -125,11 +154,28 @@ export class RpcAdapter {
 
     console.log('[RpcAdapter] Initializing...');
 
-    // Initialize Poseidon hash function
+    // Initialize Poseidon hash function FIRST
+    // (MerkleTree/RegistryTree constructors call poseidon2 to compute zeros)
     await initPoseidon();
 
-    // Sync state from chain
-    await syncFromChain(this.merkleTree, this.spentNullifiers, this.usedIntents);
+    // Initialize Grumpkin curve operations (bb.js)
+    console.log('[RpcAdapter] Initializing Grumpkin curve...');
+    await initGrumpkin();
+    const grumpkinOk = await verifyGrumpkin();
+    if (!grumpkinOk) {
+      throw new Error('Grumpkin curve verification failed - generator point mismatch');
+    }
+    console.log('[RpcAdapter] Grumpkin curve initialized');
+
+    // Create trees now that Poseidon is initialized
+    this.merkleTree = new MerkleTree();
+    this.registryTree = new RegistryTree();
+
+    // Sync state from chain (pool and registry in parallel)
+    await Promise.all([
+      syncFromChain(this.merkleTree, this.spentNullifiers, this.usedIntents),
+      syncRegistryFromChain(this.registryTree),
+    ]);
 
     // Setup routes
     this.setupRoutes();
@@ -279,7 +325,7 @@ export class RpcAdapter {
         return this.watchForDeposit(params[0] as string, params[1] as string);
 
       case 'privacy_getEncryptionKey':
-        return this.getEncryptionKey(params[0] as string);
+        return this.getEncryptionKeyRpc(params[0] as string);
 
       case 'privacy_getNullifierKeyHash':
         return this.getNullifierKeyHashRpc(params[0] as string);
@@ -295,6 +341,9 @@ export class RpcAdapter {
 
       case 'privacy_getTransactionStatus':
         return this.getTransactionStatus(params[0] as string);
+
+      case 'privacy_getRegistrationData':
+        return this.getRegistrationData(params[0] as string);
 
       default:
         throw new Error(`Method ${method} not supported`);
@@ -412,6 +461,15 @@ export class RpcAdapter {
       throw new Error('Session not found. Register viewing key first.');
     }
 
+    // Check sender is registered on-chain (required for withdraw circuit)
+    // Registration should happen automatically during session creation, but verify here
+    const senderRegistered = await isUserRegistered(normalizedSender as Hex);
+    if (!senderRegistered) {
+      throw new Error(
+        'Sender not registered on-chain. Please re-register your viewing key to trigger auto-registration.'
+      );
+    }
+
     // Check tx-in-flight guard - prevents concurrent transactions
     // Set immediately after check to prevent race condition before async operations
     if (session.txInFlight) {
@@ -519,6 +577,10 @@ export class RpcAdapter {
       if (await needsRefresh(this.merkleTree)) {
         console.log('[RPC] State refresh needed, syncing...');
         await syncFromChain(this.merkleTree, this.spentNullifiers, this.usedIntents);
+      }
+      if (await registryNeedsRefresh(this.registryTree)) {
+        console.log('[RPC] Registry refresh needed, syncing...');
+        await syncRegistryFromChain(this.registryTree);
       }
 
       // Quick validation (sets txInFlight inside to prevent race)
@@ -679,32 +741,27 @@ export class RpcAdapter {
     const recipient = parsed.to as Hex;
     const txNonce = parsed.nonce ?? 0;
 
-    // Look up recipient's encryption public key and nullifier key hash from Registry
-    const recipientPkBytes32 = await getEncryptionKey(recipient);
-    if (!recipientPkBytes32) {
-      throw new Error(`Recipient ${recipient} is not registered. They must register a viewing key first.`);
-    }
-    const recipientPubKey = hexToPubKey(recipientPkBytes32);
-    const recipientNullifierKeyHash = await getRegistryNullifierKeyHash(recipient);
-    if (recipientNullifierKeyHash === 0n) {
-      throw new Error(`Recipient ${recipient} nullifier key hash not found in registry.`);
+    // Get recipient's registry proof from local tree
+    const recipientProof = this.registryTree.generateProof(recipient);
+    if (!recipientProof) {
+      throw new Error(`Recipient ${recipient} is not registered. They must register first.`);
     }
 
     const totalInput = notes[0].amount + notes[1].amount;
     const change = totalInput - value;
 
-    // Generate merkle proofs
+    // Generate merkle proofs for input notes
     const proof0 = this.merkleTree.generateProof(notes[0].leafIndex);
     const proof1 = this.merkleTree.generateProof(notes[1].leafIndex);
 
-    // Compute nullifiers
-    const nullifier0 = computeNullifier(notes[0].commitment, session.keys.nullifierKey);
-    const nullifier1 = computeNullifier(notes[1].commitment, session.keys.nullifierKey);
+    // Compute nullifiers (new format: hash(NULLIFIER_DOMAIN, nk, leaf_index, randomness))
+    const nullifier0 = computeNullifier(session.keys.nullifierKey, notes[0].leafIndex, notes[0].randomness);
+    const nullifier1 = computeNullifier(session.keys.nullifierKey, notes[1].leafIndex, notes[1].randomness);
 
-    // Output 0: to recipient
+    // Output 0: to recipient (uses recipient's nkHash from registry proof)
     const output0Owner = BigInt(recipient);
     const output0Randomness = BigInt(keccak256(concat([signedTx, '0x00']))) % FIELD_SIZE;
-    const output0Commitment = computeCommitment(value, output0Owner, output0Randomness, recipientNullifierKeyHash);
+    const output0Commitment = computeCommitment(value, output0Owner, output0Randomness, recipientProof.nkHash);
 
     // Output 1: change back to sender
     const output1Owner = BigInt(senderAddress);
@@ -712,7 +769,6 @@ export class RpcAdapter {
     const output1Commitment = computeCommitment(change, output1Owner, output1Randomness, session.keys.nullifierKeyHash);
 
     // Intent nullifier
-    // Intent nullifier = poseidon(nullifierKey, chainId, nonce)
     const intentNullifier = computeIntentNullifier(
       session.keys.nullifierKey,
       VIRTUAL_CHAIN_ID,
@@ -726,8 +782,42 @@ export class RpcAdapter {
       recoveredPubKey
     );
 
-    // Build circuit inputs
+    // Get roots for circuit
     const merkleRoot = this.merkleTree.getRoot();
+    const registryRoot = this.registryTree.getRoot();
+
+    // Compute encrypted notes matching circuit algorithm (MUST be before proof generation)
+    // The circuit computes the same ciphertext and verifies ciphertextHash matches
+    const encSeed = deriveEncSeed(session.keys.nullifierKey);
+    const recipientPubkey: Point = { x: recipientProof.pubkeyX, y: recipientProof.pubkeyY };
+
+    // Encrypt output 0: to recipient (ECDH encryption)
+    const encryptedNote0: Cipher5 = await encryptNoteEcdhAsync(
+      encSeed,
+      recipientPubkey,
+      value,
+      output0Owner,
+      output0Randomness,
+      BigInt(txNonce),
+      0n,  // outputIndex = 0
+      grumpkinFixedBaseMul,
+      grumpkinScalarMul
+    );
+
+    // Encrypt output 1: change to self (self-encryption)
+    const encryptedNote1: Cipher5 = await encryptNoteSelfAsync(
+      encSeed,
+      change,
+      output1Owner,
+      output1Randomness,
+      BigInt(txNonce),
+      grumpkinFixedBaseMul
+    );
+
+    // Compute ciphertext hash (matching circuit and contract)
+    const ciphertextHash = ciphertextHash10(encryptedNote0, encryptedNote1);
+
+    // Build circuit inputs
     const circuitInputs: TransferCircuitInputs = {
       merkleRoot,
       nullifier0,
@@ -735,6 +825,8 @@ export class RpcAdapter {
       outputCommitment0: output0Commitment,
       outputCommitment1: output1Commitment,
       intentNullifier,
+      registryRoot,
+      ciphertextHash, // Will be computed by circuit
       signatureData,
       txNonce: BigInt(txNonce),
       txMaxPriorityFee: parsed.maxPriorityFeePerGas ?? 0n,
@@ -744,47 +836,52 @@ export class RpcAdapter {
       txValue: value,
       input0: {
         amount: notes[0].amount,
+        owner: notes[0].owner,
         randomness: notes[0].randomness,
+        nullifierKeyHash: session.keys.nullifierKeyHash,
         leafIndex: notes[0].leafIndex,
         siblings: proof0.siblings,
       },
       input1: {
         amount: notes[1].amount,
+        owner: notes[1].owner,
         randomness: notes[1].randomness,
+        nullifierKeyHash: session.keys.nullifierKeyHash,
         leafIndex: notes[1].leafIndex,
         siblings: proof1.siblings,
       },
       output0Amount: value,
-      output0Owner,
       output0Randomness,
       output1Amount: change,
       output1Randomness,
       nullifierKey: session.keys.nullifierKey,
-      output0NullifierKeyHash: recipientNullifierKeyHash,
+      recipientProof: {
+        pubkeyX: recipientProof.pubkeyX,
+        pubkeyY: recipientProof.pubkeyY,
+        nkHash: recipientProof.nkHash,
+        leafIndex: recipientProof.leafIndex,
+        siblings: recipientProof.siblings,
+      },
     };
 
     console.log('[Transfer] Generating proof...');
-    const { proof } = await generateTransferProofWorker(circuitInputs);
+    const { proof, publicInputs } = await generateTransferProofWorker(circuitInputs);
 
     // Update status to submitting
     this.pendingTxs.set(virtualHash, { status: 'submitting' });
 
-    // Encrypt note data
-    const encryptedNote0 = await encryptNoteData(recipientPubKey, {
-      owner: output0Owner,
-      amount: value,
-      randomness: output0Randomness,
-    });
-    const encryptedNote1 = await encryptNoteData(session.keys.encryptionPubKey, {
-      owner: output1Owner,
-      amount: change,
-      randomness: output1Randomness,
-    });
+    // Verify ciphertext hash matches what circuit computed (sanity check)
+    const proofCiphertextHash = publicInputs[7];
+    if (proofCiphertextHash !== ciphertextHash) {
+      console.warn(`[Transfer] Ciphertext hash mismatch! Adapter: ${ciphertextHash}, Circuit: ${proofCiphertextHash}`);
+      // This would indicate a bug in our encryption matching - log but continue for now
+    }
 
-    // Submit to L1
+    // Submit to L1 with encrypted notes computed above
     const l1Hash = await submitTransfer(
       proof,
       merkleRoot,
+      registryRoot,
       [nullifier0, nullifier1],
       [output0Commitment, output1Commitment],
       intentNullifier,
@@ -824,7 +921,7 @@ export class RpcAdapter {
 
     // For self-transfer: also add recipient note (output_0) to sender's store
     if (recipient.toLowerCase() === senderAddress.toLowerCase()) {
-      const recipientNote = createNoteWithRandomness(value, output0Owner, output0Randomness, recipientNullifierKeyHash, leafIndex0);
+      const recipientNote = createNoteWithRandomness(value, output0Owner, output0Randomness, recipientProof.nkHash, leafIndex0);
       session.noteStore.addNote(recipientNote);
     }
 
@@ -860,32 +957,28 @@ export class RpcAdapter {
 
     console.log('[Transfer] Using single-note with phantom input');
 
-    // Look up recipient's encryption public key and nullifier key hash
-    const recipientPkBytes32 = await getEncryptionKey(recipient);
-    if (!recipientPkBytes32) {
-      throw new Error(`Recipient ${recipient} is not registered. They must register a viewing key first.`);
-    }
-    const recipientPubKey = hexToPubKey(recipientPkBytes32);
-    const recipientNullifierKeyHash = await getRegistryNullifierKeyHash(recipient);
-    if (recipientNullifierKeyHash === 0n) {
-      throw new Error(`Recipient ${recipient} nullifier key hash not found in registry.`);
+    // Get recipient's registry proof from local tree
+    const recipientProof = this.registryTree.generateProof(recipient);
+    if (!recipientProof) {
+      throw new Error(`Recipient ${recipient} is not registered. They must register first.`);
     }
 
     const change = note.amount - value;
 
     // Real note (input 0)
     const proof0 = this.merkleTree.generateProof(note.leafIndex);
-    const nullifier0 = computeNullifier(note.commitment, session.keys.nullifierKey);
+    const nullifier0 = computeNullifier(session.keys.nullifierKey, note.leafIndex, note.randomness);
 
-    // Phantom note (input 1)
-    const phantomRandomness = BigInt(keccak256(concat([signedTx, '0xff']))) % FIELD_SIZE;
-    const phantomCommitment = computeCommitment(0n, BigInt(senderAddress), phantomRandomness, session.keys.nullifierKeyHash);
-    const nullifier1 = computeNullifier(phantomCommitment, session.keys.nullifierKey);
+    // Phantom note (input 1) - zero amount, uses phantom nullifier domain
+    // CRITICAL: Uses tx_nonce binding, not leaf_index/randomness (prevents nullifier poisoning)
+    const nullifier1 = computePhantomNullifier(session.keys.nullifierKey, BigInt(txNonce));
+    // Phantom randomness still needed for circuit input struct (value doesn't affect nullifier)
+    const phantomRandomness = 0n;
 
-    // Output 0: to recipient
+    // Output 0: to recipient (uses recipient's nkHash from registry proof)
     const output0Owner = BigInt(recipient);
     const output0Randomness = BigInt(keccak256(concat([signedTx, '0x00']))) % FIELD_SIZE;
-    const output0Commitment = computeCommitment(value, output0Owner, output0Randomness, recipientNullifierKeyHash);
+    const output0Commitment = computeCommitment(value, output0Owner, output0Randomness, recipientProof.nkHash);
 
     // Output 1: change back to sender
     const output1Owner = BigInt(senderAddress);
@@ -893,7 +986,6 @@ export class RpcAdapter {
     const output1Commitment = computeCommitment(change, output1Owner, output1Randomness, session.keys.nullifierKeyHash);
 
     // Intent nullifier
-    // Intent nullifier = poseidon(nullifierKey, chainId, nonce)
     const intentNullifier = computeIntentNullifier(
       session.keys.nullifierKey,
       VIRTUAL_CHAIN_ID,
@@ -907,8 +999,42 @@ export class RpcAdapter {
       recoveredPubKey
     );
 
-    // Build circuit inputs
+    // Get roots for circuit
     const merkleRoot = this.merkleTree.getRoot();
+    const registryRoot = this.registryTree.getRoot();
+
+    // Compute encrypted notes matching circuit algorithm (MUST be before proof generation)
+    // The circuit computes the same ciphertext and verifies ciphertextHash matches
+    const encSeed = deriveEncSeed(session.keys.nullifierKey);
+    const recipientPubkey: Point = { x: recipientProof.pubkeyX, y: recipientProof.pubkeyY };
+
+    // Encrypt output 0: to recipient (ECDH encryption)
+    const encryptedNote0: Cipher5 = await encryptNoteEcdhAsync(
+      encSeed,
+      recipientPubkey,
+      value,
+      output0Owner,
+      output0Randomness,
+      BigInt(txNonce),
+      0n,  // outputIndex = 0
+      grumpkinFixedBaseMul,
+      grumpkinScalarMul
+    );
+
+    // Encrypt output 1: change to self (self-encryption)
+    const encryptedNote1: Cipher5 = await encryptNoteSelfAsync(
+      encSeed,
+      change,
+      output1Owner,
+      output1Randomness,
+      BigInt(txNonce),
+      grumpkinFixedBaseMul
+    );
+
+    // Compute ciphertext hash (matching circuit and contract)
+    const ciphertextHash = ciphertextHash10(encryptedNote0, encryptedNote1);
+
+    // Build circuit inputs
     const circuitInputs: TransferCircuitInputs = {
       merkleRoot,
       nullifier0,
@@ -916,6 +1042,8 @@ export class RpcAdapter {
       outputCommitment0: output0Commitment,
       outputCommitment1: output1Commitment,
       intentNullifier,
+      registryRoot,
+      ciphertextHash,
       signatureData,
       txNonce: BigInt(txNonce),
       txMaxPriorityFee: parsed.maxPriorityFeePerGas ?? 0n,
@@ -925,47 +1053,45 @@ export class RpcAdapter {
       txValue: value,
       input0: {
         amount: note.amount,
+        owner: note.owner,
         randomness: note.randomness,
+        nullifierKeyHash: session.keys.nullifierKeyHash,
         leafIndex: note.leafIndex,
         siblings: proof0.siblings,
       },
       input1: {
         amount: 0n,
+        owner: BigInt(senderAddress),
         randomness: phantomRandomness,
+        nullifierKeyHash: session.keys.nullifierKeyHash,
         leafIndex: 0,
         siblings: Array(TREE_DEPTH).fill(0n),
       },
       output0Amount: value,
-      output0Owner,
       output0Randomness,
       output1Amount: change,
       output1Randomness,
       nullifierKey: session.keys.nullifierKey,
-      output0NullifierKeyHash: recipientNullifierKeyHash,
+      recipientProof: {
+        pubkeyX: recipientProof.pubkeyX,
+        pubkeyY: recipientProof.pubkeyY,
+        nkHash: recipientProof.nkHash,
+        leafIndex: recipientProof.leafIndex,
+        siblings: recipientProof.siblings,
+      },
     };
 
     console.log('[Transfer] Generating proof (single-note)...');
-    const { proof } = await generateTransferProofWorker(circuitInputs);
+    const { proof, publicInputs } = await generateTransferProofWorker(circuitInputs);
 
     // Update status to submitting
     this.pendingTxs.set(virtualHash, { status: 'submitting' });
-
-    // Encrypt note data
-    const encryptedNote0 = await encryptNoteData(recipientPubKey, {
-      owner: output0Owner,
-      amount: value,
-      randomness: output0Randomness,
-    });
-    const encryptedNote1 = await encryptNoteData(session.keys.encryptionPubKey, {
-      owner: output1Owner,
-      amount: change,
-      randomness: output1Randomness,
-    });
 
     // Submit to L1
     const l1Hash = await submitTransfer(
       proof,
       merkleRoot,
+      registryRoot,
       [nullifier0, nullifier1],
       [output0Commitment, output1Commitment],
       intentNullifier,
@@ -1004,7 +1130,7 @@ export class RpcAdapter {
 
     // For self-transfer: also add recipient note (output_0) to sender's store
     if (recipient.toLowerCase() === senderAddress.toLowerCase()) {
-      const recipientNote = createNoteWithRandomness(value, output0Owner, output0Randomness, recipientNullifierKeyHash, leafIndex0);
+      const recipientNote = createNoteWithRandomness(value, output0Owner, output0Randomness, recipientProof.nkHash, leafIndex0);
       session.noteStore.addNote(recipientNote);
     }
 
@@ -1041,21 +1167,26 @@ export class RpcAdapter {
     const changeAmount = totalInput - withdrawAmount;
     const txNonce = parsed.nonce ?? 0;
 
+    // Get sender's registry proof from local tree
+    const senderProof = this.registryTree.generateProof(senderAddress);
+    if (!senderProof) {
+      throw new Error(`Sender ${senderAddress} is not registered. Must register first.`);
+    }
+
     // Merkle proofs for both notes
     const proof0 = this.merkleTree.generateProof(note0.leafIndex);
     const proof1 = this.merkleTree.generateProof(note1.leafIndex);
 
-    // Nullifiers
-    const nullifier0 = computeNullifier(note0.commitment, session.keys.nullifierKey);
-    const nullifier1 = computeNullifier(note1.commitment, session.keys.nullifierKey);
+    // Nullifiers (new format: hash(NULLIFIER_DOMAIN, nk, leaf_index, randomness))
+    const nullifier0 = computeNullifier(session.keys.nullifierKey, note0.leafIndex, note0.randomness);
+    const nullifier1 = computeNullifier(session.keys.nullifierKey, note1.leafIndex, note1.randomness);
 
     // Change commitment
     const changeOwner = BigInt(senderAddress);
     const changeRandomness = BigInt(keccak256(concat([signedTx, '0x02']))) % FIELD_SIZE;
-    // Always compute commitment (even for zero change) - circuit expects hash_4
     const changeCommitment = computeCommitment(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash);
 
-    // Intent nullifier = poseidon(nullifierKey, chainId, nonce)
+    // Intent nullifier
     const intentNullifier = computeIntentNullifier(
       session.keys.nullifierKey,
       VIRTUAL_CHAIN_ID,
@@ -1068,7 +1199,25 @@ export class RpcAdapter {
       recoveredPubKey
     );
 
+    // Get roots for circuit
     const merkleRoot = this.merkleTree.getRoot();
+    const registryRoot = this.registryTree.getRoot();
+
+    // Compute encrypted change note matching circuit algorithm (MUST be before proof generation)
+    const encSeed = deriveEncSeed(session.keys.nullifierKey);
+
+    // Encrypt change note to self (self-encryption, no ECDH)
+    const encryptedChange: Cipher5 = await encryptNoteSelfAsync(
+      encSeed,
+      changeAmount,
+      changeOwner,
+      changeRandomness,
+      BigInt(txNonce),
+      grumpkinFixedBaseMul
+    );
+
+    // Compute ciphertext hash (matching circuit and contract)
+    const ciphertextHash = ciphertextHash5(encryptedChange);
 
     const circuitInputs: WithdrawCircuitInputs = {
       merkleRoot,
@@ -1078,6 +1227,8 @@ export class RpcAdapter {
       intentNullifier,
       withdrawRecipient: BigInt(withdrawRecipient),
       withdrawAmount,
+      registryRoot,
+      ciphertextHash,
       signatureData,
       txNonce: BigInt(txNonce),
       txMaxPriorityFee: parsed.maxPriorityFeePerGas ?? 0n,
@@ -1085,39 +1236,48 @@ export class RpcAdapter {
       txGasLimit: parsed.gas ?? 0n,
       input0: {
         amount: note0.amount,
+        owner: note0.owner,
         randomness: note0.randomness,
+        nullifierKeyHash: session.keys.nullifierKeyHash,
         leafIndex: note0.leafIndex,
         siblings: proof0.siblings,
       },
       input1: {
         amount: note1.amount,
+        owner: note1.owner,
         randomness: note1.randomness,
+        nullifierKeyHash: session.keys.nullifierKeyHash,
         leafIndex: note1.leafIndex,
         siblings: proof1.siblings,
       },
-      changeAmount,
       changeRandomness,
       nullifierKey: session.keys.nullifierKey,
+      senderProof: {
+        pubkeyX: senderProof.pubkeyX,
+        pubkeyY: senderProof.pubkeyY,
+        nkHash: senderProof.nkHash,
+        leafIndex: senderProof.leafIndex,
+        siblings: senderProof.siblings,
+      },
     };
 
     console.log('[Withdraw] Generating proof...');
-    const { proof } = await generateWithdrawProofWorker(circuitInputs);
+    const { proof, publicInputs } = await generateWithdrawProofWorker(circuitInputs);
 
     // Update status to submitting
     this.pendingTxs.set(virtualHash, { status: 'submitting' });
 
-    // Encrypt change note
-    const encryptedChange = changeAmount > 0n
-      ? await encryptNoteData(session.keys.encryptionPubKey, {
-          owner: changeOwner,
-          amount: changeAmount,
-          randomness: changeRandomness,
-        })
-      : '0x' as Hex;
+    // Verify ciphertext hash matches what circuit computed (sanity check)
+    const proofCiphertextHash = publicInputs[8]; // Last element for withdraw
+    if (proofCiphertextHash !== ciphertextHash) {
+      console.warn(`[Withdraw] Ciphertext hash mismatch! Adapter: ${ciphertextHash}, Circuit: ${proofCiphertextHash}`);
+    }
 
+    // Submit to L1 with encrypted change note computed above
     const l1Hash = await submitWithdraw(
       proof,
       merkleRoot,
+      registryRoot,
       [nullifier0, nullifier1],
       changeCommitment,
       intentNullifier,
@@ -1191,22 +1351,28 @@ export class RpcAdapter {
     const changeAmount = note.amount - withdrawAmount;
     const txNonce = parsed.nonce ?? 0;
 
+    // Get sender's registry proof from local tree
+    const senderProof = this.registryTree.generateProof(senderAddress);
+    if (!senderProof) {
+      throw new Error(`Sender ${senderAddress} is not registered. Must register first.`);
+    }
+
     // Real note (input 0)
     const proof0 = this.merkleTree.generateProof(note.leafIndex);
-    const nullifier0 = computeNullifier(note.commitment, session.keys.nullifierKey);
+    const nullifier0 = computeNullifier(session.keys.nullifierKey, note.leafIndex, note.randomness);
 
-    // Phantom note (input 1)
-    const phantomRandomness = BigInt(keccak256(concat([signedTx, '0xff']))) % FIELD_SIZE;
-    const phantomCommitment = computeCommitment(0n, BigInt(senderAddress), phantomRandomness, session.keys.nullifierKeyHash);
-    const nullifier1 = computeNullifier(phantomCommitment, session.keys.nullifierKey);
+    // Phantom note (input 1) - zero amount, uses phantom nullifier domain
+    // CRITICAL: Uses tx_nonce binding, not leaf_index/randomness (prevents nullifier poisoning)
+    const nullifier1 = computePhantomNullifier(session.keys.nullifierKey, BigInt(txNonce));
+    // Phantom randomness still needed for circuit input struct (value doesn't affect nullifier)
+    const phantomRandomness = 0n;
 
     // Change commitment
     const changeOwner = BigInt(senderAddress);
     const changeRandomness = BigInt(keccak256(concat([signedTx, '0x02']))) % FIELD_SIZE;
-    // Always compute commitment (even for zero change) - circuit expects hash_4
     const changeCommitment = computeCommitment(changeAmount, changeOwner, changeRandomness, session.keys.nullifierKeyHash);
 
-    // Intent nullifier = poseidon(nullifierKey, chainId, nonce)
+    // Intent nullifier
     const intentNullifier = computeIntentNullifier(
       session.keys.nullifierKey,
       VIRTUAL_CHAIN_ID,
@@ -1219,7 +1385,25 @@ export class RpcAdapter {
       recoveredPubKey
     );
 
+    // Get roots for circuit
     const merkleRoot = this.merkleTree.getRoot();
+    const registryRoot = this.registryTree.getRoot();
+
+    // Compute encrypted change note matching circuit algorithm (MUST be before proof generation)
+    const encSeed = deriveEncSeed(session.keys.nullifierKey);
+
+    // Encrypt change note to self (self-encryption, no ECDH)
+    const encryptedChange: Cipher5 = await encryptNoteSelfAsync(
+      encSeed,
+      changeAmount,
+      changeOwner,
+      changeRandomness,
+      BigInt(txNonce),
+      grumpkinFixedBaseMul
+    );
+
+    // Compute ciphertext hash (matching circuit and contract)
+    const ciphertextHash = ciphertextHash5(encryptedChange);
 
     const circuitInputs: WithdrawCircuitInputs = {
       merkleRoot,
@@ -1229,6 +1413,8 @@ export class RpcAdapter {
       intentNullifier,
       withdrawRecipient: BigInt(withdrawRecipient),
       withdrawAmount,
+      registryRoot,
+      ciphertextHash,
       signatureData,
       txNonce: BigInt(txNonce),
       txMaxPriorityFee: parsed.maxPriorityFeePerGas ?? 0n,
@@ -1236,39 +1422,43 @@ export class RpcAdapter {
       txGasLimit: parsed.gas ?? 0n,
       input0: {
         amount: note.amount,
+        owner: note.owner,
         randomness: note.randomness,
+        nullifierKeyHash: session.keys.nullifierKeyHash,
         leafIndex: note.leafIndex,
         siblings: proof0.siblings,
       },
       input1: {
         amount: 0n,
+        owner: BigInt(senderAddress),
         randomness: phantomRandomness,
+        nullifierKeyHash: session.keys.nullifierKeyHash,
         leafIndex: 0,
         siblings: Array(TREE_DEPTH).fill(0n),
       },
-      changeAmount,
       changeRandomness,
       nullifierKey: session.keys.nullifierKey,
+      senderProof: {
+        pubkeyX: senderProof.pubkeyX,
+        pubkeyY: senderProof.pubkeyY,
+        nkHash: senderProof.nkHash,
+        leafIndex: senderProof.leafIndex,
+        siblings: senderProof.siblings,
+      },
     };
 
     console.log('[Withdraw] Generating proof (single-note)...');
-    const { proof } = await generateWithdrawProofWorker(circuitInputs);
+    const { proof, publicInputs } = await generateWithdrawProofWorker(circuitInputs);
 
     // Update status to submitting
     this.pendingTxs.set(virtualHash, { status: 'submitting' });
 
-    // Encrypt change note
-    const encryptedChange = changeAmount > 0n
-      ? await encryptNoteData(session.keys.encryptionPubKey, {
-          owner: changeOwner,
-          amount: changeAmount,
-          randomness: changeRandomness,
-        })
-      : '0x' as Hex;
+    // encryptedChange already computed above with encryptNoteSelfAsync - matches circuit
 
     const l1Hash = await submitWithdraw(
       proof,
       merkleRoot,
+      registryRoot,
       [nullifier0, nullifier1],
       changeCommitment,
       intentNullifier,
@@ -1413,7 +1603,11 @@ export class RpcAdapter {
 
   // ==================== Custom Methods ====================
 
-  private async registerViewingKey(address: string, signature: string): Promise<boolean> {
+  private async registerViewingKey(address: string, signature: string): Promise<{
+    success: boolean;
+    registered: boolean;
+    registrationNeeded: boolean;
+  }> {
     const normalizedAddress = address.toLowerCase();
 
     // Verify signature matches expected message
@@ -1437,27 +1631,54 @@ export class RpcAdapter {
     // Compute nullifierKeyHash = poseidon(nullifierKey, DOMAIN) for registry storage
     const nullifierKeyHash = computeNullifierKeyHash(nullifierKey);
 
-    // Derive encryption keypair (for ECIES)
-    const { privateKey: encryptionPrivKey, publicKey: encryptionPubKey } = deriveEncryptionKeypair(signature as Hex);
+    // Note: Encryption keys are now derived from nullifierKey in-circuit
+    // encSeed = deriveEncSeed(nullifierKey)
+    // encPrivKey = ensureNonzero(encSeed)
 
     const sessionKeys: SessionKeys = {
       address: normalizedAddress,
       viewingKey,
       nullifierKey,
       nullifierKeyHash,
-      encryptionPubKey,
-      encryptionPrivKey, // Store private key for decryption
     };
 
     const noteStore = new NoteStore(sessionKeys);
 
-    // Register encryption public key and nullifier key hash in Registry if not already registered
-    const isRegistered = await isUserRegistered(normalizedAddress as Hex);
+    // Check if user is registered in the on-chain registry
+    // If not, auto-register them via relayer's registerFor() privilege
+    let isRegistered = await isUserRegistered(normalizedAddress as Hex);
     if (!isRegistered) {
-      console.log(`[RegisterViewingKey] Registering encryption key and nullifierKeyHash in Registry...`);
-      const pkHex = pubKeyToHex(encryptionPubKey);
-      const regHash = await registerEncryptionKey(normalizedAddress as Hex, pkHex, nullifierKeyHash);
-      await waitForReceipt(regHash);
+      console.log(`[RegisterViewingKey] User ${normalizedAddress} not registered - auto-registering via relayer...`);
+
+      // Derive encryption public key from nullifier key (same as circuit)
+      const encSeed = deriveEncSeed(nullifierKey);
+      const encPrivKey = encSeed === 0n ? 1n : encSeed;
+      const encPubKey = await grumpkinFixedBaseMul(encPrivKey);
+
+      try {
+        // Register on L1 via relayer
+        const { leafIndex } = await registerUserOnL1(
+          normalizedAddress as Hex,
+          [encPubKey.x, encPubKey.y],
+          nullifierKeyHash
+        );
+
+        // Update local registry tree to include the new registration
+        this.registryTree.insertEntry(
+          BigInt(normalizedAddress),
+          encPubKey.x,
+          encPubKey.y,
+          nullifierKeyHash
+        );
+
+        console.log(`[RegisterViewingKey] Auto-registration complete, leafIndex=${leafIndex}`);
+        isRegistered = true;
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[RegisterViewingKey] Auto-registration failed: ${errMsg}`);
+        // Continue with local session - user can still receive from deposits with plaintext
+        // but transfers from others won't work until registered
+      }
     }
 
     // Recover notes from chain events
@@ -1470,28 +1691,25 @@ export class RpcAdapter {
     const recoveredTransactions: TransactionRecord[] = [];
 
     for (const dep of deposits) {
-      if (dep.encryptedNote && dep.encryptedNote.length > 2) {
-        // Try to decrypt with our private key
-        const noteData = decryptNoteData(encryptionPrivKey, dep.encryptedNote);
-        if (noteData && noteData.owner === userOwner) {
-          // Verify commitment (uses our nullifierKeyHash)
-          const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness, nullifierKeyHash);
-          if (expectedCommitment === dep.commitment) {
-            const nullifier = computeNullifier(dep.commitment, nullifierKey);
-            if (!this.spentNullifiers.has(nullifier)) {
-              const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, nullifierKeyHash, dep.leafIndex);
-              noteStore.addNote(note);
-              recoveredCount++;
-            }
-            // Record deposit transaction (regardless of spent status)
-            recoveredTransactions.push({
-              type: 'deposit',
-              virtualHash: dep.txHash,
-              l1Hash: dep.txHash,
-              amount: noteData.amount,
-              timestamp: Number(dep.blockNumber),
-            });
+      // Deposit event has plaintext amount, owner, randomness - no decryption needed
+      if (dep.owner === userOwner) {
+        // Verify commitment using our nullifierKeyHash
+        const expectedCommitment = computeCommitment(dep.amount, dep.owner, dep.randomness, nullifierKeyHash);
+        if (expectedCommitment === dep.commitment) {
+          const nullifier = computeNullifier(nullifierKey, dep.leafIndex, dep.randomness);
+          if (!this.spentNullifiers.has(nullifier)) {
+            const note = createNoteWithRandomness(dep.amount, dep.owner, dep.randomness, nullifierKeyHash, dep.leafIndex);
+            noteStore.addNote(note);
+            recoveredCount++;
           }
+          // Record deposit transaction (regardless of spent status)
+          recoveredTransactions.push({
+            type: 'deposit',
+            virtualHash: dep.txHash,
+            l1Hash: dep.txHash,
+            amount: dep.amount,
+            timestamp: Number(dep.blockNumber),
+          });
         }
       }
     }
@@ -1500,31 +1718,40 @@ export class RpcAdapter {
     const transfers = await getTransferEvents();
 
     for (const xfer of transfers) {
-      // Try to decrypt both notes first to detect self-sends
-      const decryptedNotes: Array<{ index: number; amount: bigint; randomness: bigint; commitment: bigint; leafIndex: number }> = [];
+      // Try to decrypt both notes using new in-circuit encryption format
+      // Note 0: ECDH encrypted to recipient
+      // Note 1: Self-encrypted (sender's change)
+      const decryptedNotes: Array<{ index: number; amount: bigint; randomness: bigint; commitment: bigint; leafIndex: number; isChange: boolean }> = [];
 
       for (let i = 0; i < 2; i++) {
         const encNote = xfer.encryptedNotes[i];
-        if (encNote && encNote.length > 2) {
-          const noteData = decryptNoteData(encryptionPrivKey, encNote);
-          if (noteData && noteData.owner === userOwner) {
-            const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness, nullifierKeyHash);
-            if (expectedCommitment === xfer.commitments[i]) {
-              decryptedNotes.push({
-                index: i,
-                amount: noteData.amount,
-                randomness: noteData.randomness,
-                commitment: xfer.commitments[i],
-                leafIndex: xfer.leafIndices[i],
-              });
-            }
-          }
+        // encNote is now Cipher5 (5 bigints), not bytes
+        const cipher: Cipher5 = [encNote[0], encNote[1], encNote[2], encNote[3], encNote[4]];
+
+        // Try both self-decryption and ECDH, with commitment verification
+        const result = await tryDecryptNoteWithCommitmentAsync(
+          cipher,
+          nullifierKey,
+          nullifierKeyHash,
+          xfer.commitments[i],
+          userOwner,
+          grumpkinScalarMul
+        );
+        if (result) {
+          decryptedNotes.push({
+            index: i,
+            amount: result.note.amount,
+            randomness: result.note.randomness,
+            commitment: xfer.commitments[i],
+            leafIndex: xfer.leafIndices[i],
+            isChange: result.isChange,
+          });
         }
       }
 
       // Add unspent notes to store
       for (const dn of decryptedNotes) {
-        const nullifier = computeNullifier(dn.commitment, nullifierKey);
+        const nullifier = computeNullifier(nullifierKey, dn.leafIndex, dn.randomness);
         if (!this.spentNullifiers.has(nullifier)) {
           const note = createNoteWithRandomness(dn.amount, userOwner, dn.randomness, nullifierKeyHash, dn.leafIndex);
           noteStore.addNote(note);
@@ -1551,19 +1778,23 @@ export class RpcAdapter {
 
     // 3. Scan withdrawal events for change notes
     const withdrawals = await getWithdrawEvents();
+    const encSeed = deriveEncSeed(nullifierKey);
 
     for (const w of withdrawals) {
       // Check if this withdrawal is ours (either by change note or recipient address)
       let isOurs = false;
       let withdrawAmount = w.amount;
 
-      if (w.encryptedChange && w.encryptedChange.length > 2 && w.changeCommitment !== 0n) {
-        const noteData = decryptNoteData(encryptionPrivKey, w.encryptedChange);
+      // encryptedChange is now Cipher5 (5 bigints), not bytes
+      if (w.changeCommitment !== 0n) {
+        const cipher: Cipher5 = [w.encryptedChange[0], w.encryptedChange[1], w.encryptedChange[2], w.encryptedChange[3], w.encryptedChange[4]];
+        // Change notes are self-encrypted (no ECDH)
+        const noteData = decryptSelfNote(cipher, encSeed);
         if (noteData && noteData.owner === userOwner) {
           isOurs = true;
           const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness, nullifierKeyHash);
           if (expectedCommitment === w.changeCommitment) {
-            const nullifier = computeNullifier(w.changeCommitment, nullifierKey);
+            const nullifier = computeNullifier(nullifierKey, w.changeLeafIndex, noteData.randomness);
             if (!this.spentNullifiers.has(nullifier)) {
               const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, nullifierKeyHash, w.changeLeafIndex);
               noteStore.addNote(note);
@@ -1603,37 +1834,31 @@ export class RpcAdapter {
 
     // Log starting nonce (computed from usedIntents)
     const startingNonce = this.recoverNonce(sessionKeys.nullifierKey);
-    console.log(`[RegisterViewingKey] ${normalizedAddress}, recovered ${recoveredCount} notes, starting nonce ${startingNonce}`);
-    return true;
+    console.log(`[RegisterViewingKey] ${normalizedAddress}, recovered ${recoveredCount} notes, starting nonce ${startingNonce}, registered: ${isRegistered}`);
+
+    return {
+      success: true,
+      registered: isRegistered,
+      registrationNeeded: !isRegistered,
+    };
   }
 
   // ==================== L1 Deposit Support ====================
 
   /**
-   * Encrypt note data for a user (for L1 deposits)
-   * Used by frontend to encrypt note data before submitting deposit tx
+   * Encrypt note data for a user (deprecated)
+   *
+   * With in-circuit encryption, deposits no longer need ECIES encryption.
+   * The plaintext (amount, owner, randomness) is included in the Deposit event.
+   * This method is kept for API compatibility but returns empty bytes.
    */
   private async encryptNoteDataForUser(
-    address: string,
-    noteData: { owner: string; amount: string; randomness: string }
+    _address: string,
+    _noteData: { owner: string; amount: string; randomness: string }
   ): Promise<Hex> {
-    const normalizedAddress = address.toLowerCase();
-    const session = this.sessions.get(normalizedAddress);
-    if (!session) {
-      throw new Error('Session not found. Register viewing key first.');
-    }
-
-    const owner = BigInt(noteData.owner);
-    const amount = BigInt(noteData.amount);
-    const randomness = BigInt(noteData.randomness);
-
-    const encrypted = await encryptNoteData(session.keys.encryptionPubKey, {
-      owner,
-      amount,
-      randomness,
-    });
-
-    return encrypted;
+    // Deposits now have plaintext in the event - encryption not needed
+    // Return empty bytes for backwards compatibility
+    return '0x' as Hex;
   }
 
   /**
@@ -1673,71 +1898,71 @@ export class RpcAdapter {
     // Re-scan events for this user's notes
     const { getDepositEvents, getTransferEvents, getWithdrawEvents } = await import('./sync.js');
     const userOwner = BigInt(normalizedAddress);
-    const encryptionPrivKey = session.keys.encryptionPrivKey;
-
-    if (!encryptionPrivKey) {
-      throw new Error('Encryption key not available');
-    }
+    const { nullifierKey, nullifierKeyHash } = session.keys;
+    const encSeed = deriveEncSeed(nullifierKey);
 
     // Clear and rebuild note store
     const newNoteStore = new NoteStore(session.keys);
     const newTransactions: TransactionRecord[] = [];
 
-    // Scan deposits
+    // Scan deposits - plaintext in event, no decryption needed
     const deposits = await getDepositEvents();
     for (const dep of deposits) {
-      if (dep.encryptedNote && dep.encryptedNote.length > 2) {
-        const noteData = decryptNoteData(encryptionPrivKey, dep.encryptedNote);
-        if (noteData && noteData.owner === userOwner) {
-          const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness, session.keys.nullifierKeyHash);
-          if (expectedCommitment === dep.commitment) {
-            const nullifier = computeNullifier(dep.commitment, session.keys.nullifierKey);
-            if (!this.spentNullifiers.has(nullifier)) {
-              const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, session.keys.nullifierKeyHash, dep.leafIndex);
-              newNoteStore.addNote(note);
-            }
-            newTransactions.push({
-              type: 'deposit',
-              virtualHash: dep.txHash,
-              l1Hash: dep.txHash,
-              amount: noteData.amount,
-              timestamp: Number(dep.blockNumber),
-            });
+      if (dep.owner === userOwner) {
+        const expectedCommitment = computeCommitment(dep.amount, dep.owner, dep.randomness, nullifierKeyHash);
+        if (expectedCommitment === dep.commitment) {
+          const nullifier = computeNullifier(nullifierKey, dep.leafIndex, dep.randomness);
+          if (!this.spentNullifiers.has(nullifier)) {
+            const note = createNoteWithRandomness(dep.amount, dep.owner, dep.randomness, nullifierKeyHash, dep.leafIndex);
+            newNoteStore.addNote(note);
           }
+          newTransactions.push({
+            type: 'deposit',
+            virtualHash: dep.txHash,
+            l1Hash: dep.txHash,
+            amount: dep.amount,
+            timestamp: Number(dep.blockNumber),
+          });
         }
       }
     }
 
-    // Scan transfers
+    // Scan transfers - use new in-circuit encryption format
     const transfers = await getTransferEvents();
     for (const xfer of transfers) {
-      // Try to decrypt both notes first to detect self-sends
-      const decryptedNotes: Array<{ index: number; amount: bigint; randomness: bigint; commitment: bigint; leafIndex: number }> = [];
+      // Try to decrypt both notes using new encryption format
+      const decryptedNotes: Array<{ index: number; amount: bigint; randomness: bigint; commitment: bigint; leafIndex: number; isChange: boolean }> = [];
 
       for (let i = 0; i < 2; i++) {
         const encNote = xfer.encryptedNotes[i];
-        if (encNote && encNote.length > 2) {
-          const noteData = decryptNoteData(encryptionPrivKey, encNote);
-          if (noteData && noteData.owner === userOwner) {
-            const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness, session.keys.nullifierKeyHash);
-            if (expectedCommitment === xfer.commitments[i]) {
-              decryptedNotes.push({
-                index: i,
-                amount: noteData.amount,
-                randomness: noteData.randomness,
-                commitment: xfer.commitments[i],
-                leafIndex: xfer.leafIndices[i],
-              });
-            }
-          }
+        const cipher: Cipher5 = [encNote[0], encNote[1], encNote[2], encNote[3], encNote[4]];
+
+        // Try both self-decryption and ECDH, with commitment verification
+        const result = await tryDecryptNoteWithCommitmentAsync(
+          cipher,
+          nullifierKey,
+          nullifierKeyHash,
+          xfer.commitments[i],
+          userOwner,
+          grumpkinScalarMul
+        );
+        if (result) {
+          decryptedNotes.push({
+            index: i,
+            amount: result.note.amount,
+            randomness: result.note.randomness,
+            commitment: xfer.commitments[i],
+            leafIndex: xfer.leafIndices[i],
+            isChange: result.isChange,
+          });
         }
       }
 
       // Add unspent notes to store
       for (const dn of decryptedNotes) {
-        const nullifier = computeNullifier(dn.commitment, session.keys.nullifierKey);
+        const nullifier = computeNullifier(nullifierKey, dn.leafIndex, dn.randomness);
         if (!this.spentNullifiers.has(nullifier)) {
-          const note = createNoteWithRandomness(dn.amount, userOwner, dn.randomness, session.keys.nullifierKeyHash, dn.leafIndex);
+          const note = createNoteWithRandomness(dn.amount, userOwner, dn.randomness, nullifierKeyHash, dn.leafIndex);
           newNoteStore.addNote(note);
         }
       }
@@ -1758,19 +1983,20 @@ export class RpcAdapter {
       }
     }
 
-    // Scan withdrawals
+    // Scan withdrawals - change notes are self-encrypted
     const withdrawals = await getWithdrawEvents();
     for (const w of withdrawals) {
       let isOurs = false;
-      if (w.encryptedChange && w.encryptedChange.length > 2 && w.changeCommitment !== 0n) {
-        const noteData = decryptNoteData(encryptionPrivKey, w.encryptedChange);
+      if (w.changeCommitment !== 0n) {
+        const cipher: Cipher5 = [w.encryptedChange[0], w.encryptedChange[1], w.encryptedChange[2], w.encryptedChange[3], w.encryptedChange[4]];
+        const noteData = decryptSelfNote(cipher, encSeed);
         if (noteData && noteData.owner === userOwner) {
           isOurs = true;
-          const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness, session.keys.nullifierKeyHash);
+          const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness, nullifierKeyHash);
           if (expectedCommitment === w.changeCommitment) {
-            const nullifier = computeNullifier(w.changeCommitment, session.keys.nullifierKey);
+            const nullifier = computeNullifier(nullifierKey, w.changeLeafIndex, noteData.randomness);
             if (!this.spentNullifiers.has(nullifier)) {
-              const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, session.keys.nullifierKeyHash, w.changeLeafIndex);
+              const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, nullifierKeyHash, w.changeLeafIndex);
               newNoteStore.addNote(note);
             }
           }
@@ -1803,16 +2029,30 @@ export class RpcAdapter {
   /**
    * Get user's encryption public key (for deposits)
    */
-  private async getEncryptionKey(address: string): Promise<Hex | null> {
+  private async getEncryptionKeyRpc(address: string): Promise<Hex | null> {
     const normalizedAddress = address.toLowerCase();
+
+    // Check session first - derive Grumpkin pubkey from nullifierKey
     const session = this.sessions.get(normalizedAddress);
     if (session) {
-      // Return from session if available
-      return pubKeyToHex(session.keys.encryptionPubKey);
+      // Derive encryption public key from nullifier key (matches circuit derivation)
+      const encSeed = deriveEncSeed(session.keys.nullifierKey);
+      const encPrivKey = encSeed === 0n ? 1n : encSeed;
+      const encPubKey = await grumpkinFixedBaseMul(encPrivKey);
+      const xHex = encPubKey.x.toString(16).padStart(64, '0');
+      const yHex = encPubKey.y.toString(16).padStart(64, '0');
+      return `0x${xHex}${yHex}` as Hex;
     }
 
-    // Otherwise try to get from registry
-    return getEncryptionKey(normalizedAddress as Hex);
+    // Get Grumpkin key from registry
+    const grumpkinKey = await getEncryptionKey(normalizedAddress as Hex);
+    if (!grumpkinKey) {
+      return null;
+    }
+    // Return Grumpkin key as concatenated hex (x || y)
+    const xHex = grumpkinKey[0].toString(16).padStart(64, '0');
+    const yHex = grumpkinKey[1].toString(16).padStart(64, '0');
+    return `0x${xHex}${yHex}` as Hex;
   }
 
   /**
@@ -1832,6 +2072,44 @@ export class RpcAdapter {
   }
 
   /**
+   * Get registration data for user to submit L1 registration tx
+   * Returns the encPublicKey and nullifierKeyHash needed for RecipientRegistry.register()
+   */
+  private async getRegistrationData(address: string): Promise<{
+    encPublicKey: [Hex, Hex];
+    nullifierKeyHash: Hex;
+    registered: boolean;
+    registryAddress: Hex;
+  } | null> {
+    const normalizedAddress = address.toLowerCase();
+    const session = this.sessions.get(normalizedAddress);
+
+    if (!session) {
+      console.log(`[GetRegistrationData] No session for ${normalizedAddress}`);
+      return null;
+    }
+
+    // Derive encryption public key from nullifier key (same as circuit)
+    const encSeed = deriveEncSeed(session.keys.nullifierKey);
+    const encPrivKey = encSeed === 0n ? 1n : encSeed;
+    const encPubKey = await grumpkinFixedBaseMul(encPrivKey);
+
+    // Check if already registered on-chain
+    const registered = await isUserRegistered(normalizedAddress as Hex);
+
+    // Format for contract call: uint256[2]
+    const xHex = toHex(encPubKey.x);
+    const yHex = toHex(encPubKey.y);
+
+    return {
+      encPublicKey: [xHex, yHex],
+      nullifierKeyHash: toHex(session.keys.nullifierKeyHash),
+      registered,
+      registryAddress: CONTRACTS.registry as Hex,
+    };
+  }
+
+  /**
    * Watch for a deposit transaction and sync notes
    * Called after user submits deposit tx on L1
    */
@@ -1848,38 +2126,36 @@ export class RpcAdapter {
 
     // If user has a session, recover their notes
     const session = this.sessions.get(normalizedAddress);
-    if (session && session.keys.encryptionPrivKey) {
+    if (session) {
       // Re-scan deposit events to pick up the new note
+      // Deposits have plaintext in the event - no decryption needed
       const { getDepositEvents } = await import('./sync.js');
       const deposits = await getDepositEvents();
-      const encryptionPrivKey = session.keys.encryptionPrivKey;
       const userOwner = BigInt(normalizedAddress);
+      const { nullifierKey, nullifierKeyHash } = session.keys;
 
       for (const dep of deposits) {
-        if (dep.encryptedNote && dep.encryptedNote.length > 2) {
-          const noteData = decryptNoteData(encryptionPrivKey, dep.encryptedNote);
-          if (noteData && noteData.owner === userOwner) {
-            const expectedCommitment = computeCommitment(noteData.amount, noteData.owner, noteData.randomness, session.keys.nullifierKeyHash);
-            if (expectedCommitment === dep.commitment) {
-              // Check if we already have this note
-              const existingNotes = session.noteStore.getAllNotes();
-              const alreadyHave = existingNotes.some(n => n.commitment === dep.commitment);
-              if (!alreadyHave) {
-                const nullifier = computeNullifier(dep.commitment, session.keys.nullifierKey);
-                if (!this.spentNullifiers.has(nullifier)) {
-                  const note = createNoteWithRandomness(noteData.amount, noteData.owner, noteData.randomness, session.keys.nullifierKeyHash, dep.leafIndex);
-                  session.noteStore.addNote(note);
-                  console.log(`[WatchForDeposit] Added note: ${noteData.amount} wei`);
+        if (dep.owner === userOwner) {
+          const expectedCommitment = computeCommitment(dep.amount, dep.owner, dep.randomness, nullifierKeyHash);
+          if (expectedCommitment === dep.commitment) {
+            // Check if we already have this note
+            const existingNotes = session.noteStore.getAllNotes();
+            const alreadyHave = existingNotes.some(n => n.commitment === dep.commitment);
+            if (!alreadyHave) {
+              const nullifier = computeNullifier(nullifierKey, dep.leafIndex, dep.randomness);
+              if (!this.spentNullifiers.has(nullifier)) {
+                const note = createNoteWithRandomness(dep.amount, dep.owner, dep.randomness, nullifierKeyHash, dep.leafIndex);
+                session.noteStore.addNote(note);
+                console.log(`[WatchForDeposit] Added note: ${dep.amount} wei`);
 
-                  // Record deposit transaction
-                  session.transactions.push({
-                    type: 'deposit',
-                    virtualHash: txHash,
-                    l1Hash: txHash,
-                    amount: noteData.amount,
-                    timestamp: Date.now(),
-                  });
-                }
+                // Record deposit transaction
+                session.transactions.push({
+                  type: 'deposit',
+                  virtualHash: txHash,
+                  l1Hash: txHash,
+                  amount: dep.amount,
+                  timestamp: Date.now(),
+                });
               }
             }
           }
