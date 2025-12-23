@@ -1,7 +1,13 @@
 // Note management for shielded balances
 // Handles note creation, encryption, decryption, and syncing
 
-import { computeCommitment, computeNullifier } from './crypto/poseidon.js';
+import {
+  computeCommitment,
+  computeNullifier,
+  computeNullifierKeyHash,
+  type Cipher5,
+  type DecryptedNote,
+} from './crypto/embedded-curve.js';
 import { FIELD_SIZE } from './config.js';
 
 /**
@@ -27,11 +33,13 @@ export interface Note {
  */
 export interface SessionKeys {
   address: string; // Ethereum address
-  viewingKey: Uint8Array; // For decryption
-  nullifierKey: bigint; // For computing nullifiers (private, never broadcast)
+  viewingKey: Uint8Array; // For viewing key derivation
+  nullifierKey: bigint; // For computing nullifiers and encryption seed (private, never broadcast)
   nullifierKeyHash: bigint; // Hash of nullifierKey, stored in registry and bound to commitments
-  encryptionPubKey: Uint8Array; // Public key for ECIES (33 bytes compressed)
-  encryptionPrivKey?: Uint8Array; // Private key for ECIES decryption (32 bytes)
+  // Note: Encryption keys are derived from nullifierKey via deriveEncSeed()
+  // encSeed = poseidon(nullifierKey, ENC_KEY_DOMAIN)
+  // encPrivKey = encSeed (ensureNonzero)
+  // encPubKey = G * encPrivKey (computed via Grumpkin)
 }
 
 /**
@@ -137,10 +145,14 @@ export class NoteStore {
 
   /**
    * Compute the nullifier for a note
-   * Uses the session's nullifierKey (bound to commitment via nullifierKeyHash)
+   * Uses: hash(NULLIFIER_DOMAIN, nullifier_key, leaf_index, randomness)
    */
   computeNoteNullifier(note: Note): bigint {
-    return computeNullifier(note.commitment, this.sessionKeys.nullifierKey);
+    return computeNullifier(
+      this.sessionKeys.nullifierKey,
+      note.leafIndex,
+      note.randomness
+    );
   }
 
   /**

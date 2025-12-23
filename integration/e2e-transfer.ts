@@ -28,12 +28,18 @@ import {
   defineChain,
   toHex,
   formatEther,
+  createWalletClient,
+  getContract,
+  http,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+import { foundry } from 'viem/chains';
 
-import { initPoseidon, computeCommitment, computeNullifier, computeNullifierKeyHash, computeIntentNullifier } from './helpers/poseidon.js';
+import { initPoseidon, computeCommitment, computeNullifier, computePhantomNullifier, computeNullifierKeyHash, computeIntentNullifier } from './helpers/poseidon.js';
 import { MerkleTree } from './helpers/merkle.js';
-import { deployContracts, getContracts, DeployedContracts } from './helpers/deploy.js';
+import { RegistryTree } from './helpers/registry.js';
+import { deployContracts, getContracts, DeployedContracts, REGISTRY_ABI } from './helpers/deploy.js';
+import { ANVIL_RPC_URL } from './helpers/config.js';
 import {
   generateTransferProof,
   generateWithdrawProof,
@@ -41,6 +47,18 @@ import {
   TransferCircuitInputs,
   WithdrawCircuitInputs,
 } from './helpers/proof.js';
+import {
+  initBarretenberg,
+  destroyBarretenberg,
+  deriveEncSeed,
+  deriveEncPubkey,
+  encryptNoteEcdh,
+  encryptNoteSelf,
+  ciphertextHash10,
+  ciphertextHash5,
+  type Point,
+  type Cipher5,
+} from './helpers/encryption.js';
 import {
   VIRTUAL_CHAIN_ID,
   TEST_PRIVATE_KEY,
@@ -50,6 +68,7 @@ import {
   FIXED_MAX_FEE,
   FIXED_GAS_LIMIT,
   WITHDRAW_SENTINEL,
+  TREE_DEPTH,
 } from './helpers/config.js';
 
 // Virtual chain for signing (not a real network)
@@ -83,13 +102,16 @@ async function main() {
   console.log('Privacy Pool E2E Transfer Test');
   console.log('='.repeat(60));
 
-  // Initialize Poseidon
+  // Initialize cryptographic libraries
   console.log('\n--- Initializing ---');
   await initPoseidon();
   console.log('Poseidon initialized');
+  await initBarretenberg();
+  console.log('Barretenberg initialized');
 
   // Setup accounts
   const account = privateKeyToAccount(TEST_PRIVATE_KEY as Hex);
+  const recipientAccount = privateKeyToAccount(TEST_PRIVATE_KEY_1 as Hex);
   const recipientAddress = TEST_ACCOUNT_1_ADDRESS;
   console.log(`Sender: ${account.address}`);
   console.log(`Recipient: ${recipientAddress}`);
@@ -97,10 +119,13 @@ async function main() {
   // Deploy contracts
   console.log('\n--- Deploying Contracts ---');
   const addresses = await deployContracts();
-  const { publicClient, walletClient, privacyPool } = getContracts(addresses);
+  const { publicClient, walletClient, privacyPool, registry } = getContracts(addresses);
 
-  // Create local merkle tree (mirrors on-chain)
+  // Create local merkle tree (mirrors on-chain pool tree)
   const merkleTree = new MerkleTree();
+
+  // Create local registry tree (mirrors on-chain registry)
+  const registryTree = new RegistryTree();
 
   // ==================== DEPOSIT PHASE ====================
   console.log('\n--- Depositing ETH ---');
@@ -155,6 +180,75 @@ async function main() {
     throw new Error('Merkle root mismatch!');
   }
   console.log('✓ Merkle roots match');
+
+  // ==================== REGISTRY SETUP ====================
+  console.log('\n--- Setting Up Registry ---');
+
+  // Generate recipient's nullifier key
+  const recipientNullifierKey = randomBigInt();
+  const recipientNullifierKeyHash = computeNullifierKeyHash(recipientNullifierKey);
+  console.log(`Recipient nullifier key hash: ${recipientNullifierKeyHash.toString(16).slice(0, 16)}...`);
+
+  // Derive encryption pubkeys
+  const senderEncPubkey = await deriveEncPubkey(senderNullifierKey);
+  const recipientEncPubkey = await deriveEncPubkey(recipientNullifierKey);
+  console.log(`Sender enc pubkey: (${senderEncPubkey.x.toString(16).slice(0, 12)}...)`);
+  console.log(`Recipient enc pubkey: (${recipientEncPubkey.x.toString(16).slice(0, 12)}...)`);
+
+  // Register sender on-chain with the RecipientRegistry contract
+  console.log('Registering sender on-chain...');
+  const senderRegHash = await registry.write.register([
+    [senderEncPubkey.x, senderEncPubkey.y],
+    senderNullifierKeyHash,
+  ]);
+  await publicClient.waitForTransactionReceipt({ hash: senderRegHash });
+  console.log('✓ Sender registered on-chain');
+
+  // Also register in local registry tree for proof generation
+  registryTree.register(
+    BigInt(account.address),
+    senderEncPubkey.x,
+    senderEncPubkey.y,
+    senderNullifierKeyHash
+  );
+
+  // Register recipient on-chain - need to use recipient's wallet
+  console.log('Registering recipient on-chain...');
+  const recipientWalletClient = createWalletClient({
+    account: recipientAccount,
+    chain: foundry,
+    transport: http(ANVIL_RPC_URL),
+  });
+  const recipientRegistry = getContract({
+    address: addresses.registry,
+    abi: REGISTRY_ABI,
+    client: { public: publicClient, wallet: recipientWalletClient },
+  });
+  const recipientRegHash = await recipientRegistry.write.register([
+    [recipientEncPubkey.x, recipientEncPubkey.y],
+    recipientNullifierKeyHash,
+  ]);
+  await publicClient.waitForTransactionReceipt({ hash: recipientRegHash });
+  console.log('✓ Recipient registered on-chain');
+
+  // Also register in local registry tree for proof generation
+  registryTree.register(
+    BigInt(recipientAddress),
+    recipientEncPubkey.x,
+    recipientEncPubkey.y,
+    recipientNullifierKeyHash
+  );
+
+  // Get on-chain registry root and verify it matches local
+  const registryRoot = await registry.read.getLatestRoot();
+  const localRegistryRoot = registryTree.getRoot();
+  console.log(`On-chain registry root: ${registryRoot.toString(16).slice(0, 16)}...`);
+  console.log(`Local registry root:    ${localRegistryRoot.toString(16).slice(0, 16)}...`);
+
+  if (registryRoot !== localRegistryRoot) {
+    throw new Error('Registry root mismatch!');
+  }
+  console.log('✓ Registry roots match');
 
   // ==================== SIGN TRANSACTION ====================
   console.log('\n--- Signing Transfer Transaction ---');
@@ -214,33 +308,33 @@ async function main() {
   const proof0 = merkleTree.generateProof(notes[0].leafIndex);
   const proof1 = merkleTree.generateProof(notes[1].leafIndex);
 
-  // Generate recipient's nullifier key (in production, would be registered in registry)
-  const recipientNullifierKey = randomBigInt();
-  const recipientNullifierKeyHash = computeNullifierKeyHash(recipientNullifierKey);
-  console.log(`Recipient nullifier key hash: ${recipientNullifierKeyHash.toString(16).slice(0, 16)}...`);
+  // Get recipient's registry proof
+  const recipientRegistryProof = registryTree.generateProof(BigInt(recipientAddress));
+  if (!recipientRegistryProof) {
+    throw new Error('Recipient not in registry');
+  }
+  console.log(`Recipient registry leaf index: ${recipientRegistryProof.leafIndex}`);
 
-  // Compute nullifiers (using sender's nullifier key, which is bound to commitment via nkHash)
-  const nullifier0 = computeNullifier(notes[0].commitment, senderNullifierKey);
-  const nullifier1 = computeNullifier(notes[1].commitment, senderNullifierKey);
+  // Compute nullifiers using new format: hash4([NULLIFIER_DOMAIN, nk, leaf_index, randomness])
+  const nullifier0 = computeNullifier(senderNullifierKey, notes[0].leafIndex, notes[0].randomness);
+  const nullifier1 = computeNullifier(senderNullifierKey, notes[1].leafIndex, notes[1].randomness);
   console.log(`Nullifier 0: ${nullifier0.toString(16).slice(0, 16)}...`);
   console.log(`Nullifier 1: ${nullifier1.toString(16).slice(0, 16)}...`);
 
   // Output notes
-  // Output 0: transfer amount to recipient (uses recipient's nullifierKeyHash)
+  // Output 0: transfer amount to recipient (uses recipient's nkHash from registry)
   const output0Randomness = randomBigInt();
-  const output0Owner = txTo;
-  const output0Amount = transferAmount;
-  const outputCommitment0 = computeCommitment(output0Amount, output0Owner, output0Randomness, recipientNullifierKeyHash);
+  const outputCommitment0 = computeCommitment(transferAmount, txTo, output0Randomness, recipientNullifierKeyHash);
 
   // Output 1: change back to sender (uses sender's nullifierKeyHash)
   const output1Randomness = randomBigInt();
   const output1Amount = notes[0].amount + notes[1].amount - transferAmount;
-  const outputCommitment1 = computeCommitment(output1Amount, notes[0].owner, output1Randomness, senderNullifierKeyHash);
+  const outputCommitment1 = computeCommitment(output1Amount, BigInt(account.address), output1Randomness, senderNullifierKeyHash);
 
-  console.log(`Output 0: ${output0Amount} wei to recipient`);
+  console.log(`Output 0: ${transferAmount} wei to recipient`);
   console.log(`Output 1: ${output1Amount} wei change to sender`);
 
-  // Compute intent nullifier = poseidon(nullifierKey, chainId, nonce)
+  // Compute intent nullifier
   const intentNullifier = computeIntentNullifier(
     senderNullifierKey,
     VIRTUAL_CHAIN_ID,
@@ -248,24 +342,56 @@ async function main() {
   );
   console.log(`Intent nullifier: ${intentNullifier.toString(16).slice(0, 16)}...`);
 
+  // ==================== COMPUTE ENCRYPTED NOTES ====================
+  console.log('\n--- Computing Encrypted Notes ---');
+  const encSeed = deriveEncSeed(senderNullifierKey);
+
+  // Encrypt output 0: to recipient using ECDH
+  const encryptedNote0: Cipher5 = await encryptNoteEcdh(
+    encSeed,
+    recipientEncPubkey,
+    transferAmount,
+    txTo,
+    output0Randomness,
+    txNonce,
+    0n  // output index 0
+  );
+  console.log(`Encrypted note 0: [${encryptedNote0[0].toString(16).slice(0, 8)}...]`);
+
+  // Encrypt output 1: change to self using self-encryption
+  const encryptedNote1: Cipher5 = await encryptNoteSelf(
+    encSeed,
+    output1Amount,
+    BigInt(account.address),
+    output1Randomness,
+    txNonce
+  );
+  console.log(`Encrypted note 1: [${encryptedNote1[0].toString(16).slice(0, 8)}...]`);
+
+  // Compute ciphertext hash (what circuit will verify)
+  const ciphertextHash = ciphertextHash10(encryptedNote0, encryptedNote1);
+  console.log(`Ciphertext hash: ${ciphertextHash.toString(16).slice(0, 16)}...`);
+
   // Build full circuit inputs
   const circuitInputs: TransferCircuitInputs = {
-    // Public inputs
+    // Public inputs (8 total)
     merkleRoot: localRoot,
     nullifier0,
     nullifier1,
     outputCommitment0,
     outputCommitment1,
     intentNullifier,
+    registryRoot,
+    ciphertextHash,
 
     // Private inputs
     signatureData,
     txNonce,
+    txTo,
+    txValue,
     txMaxPriorityFee: FIXED_MAX_PRIORITY_FEE,
     txMaxFee: FIXED_MAX_FEE,
     txGasLimit: FIXED_GAS_LIMIT,
-    txTo,
-    txValue,
 
     input0: {
       amount: notes[0].amount,
@@ -280,17 +406,18 @@ async function main() {
       siblings: proof1.siblings,
     },
 
-    output0Amount,
-    output0Owner,
     output0Randomness,
-
-    output1Amount,
     output1Randomness,
 
-    // Nullifier key (for spending input notes and computing change commitment)
     nullifierKey: senderNullifierKey,
-    // Recipient's nullifier key hash (for output note 0)
-    output0NullifierKeyHash: recipientNullifierKeyHash,
+
+    recipientProof: {
+      pubkeyX: recipientRegistryProof.pubkeyX,
+      pubkeyY: recipientRegistryProof.pubkeyY,
+      nkHash: recipientRegistryProof.nkHash,
+      leafIndex: recipientRegistryProof.leafIndex,
+      siblings: recipientRegistryProof.siblings,
+    },
   };
 
   // ==================== GENERATE PROOF ====================
@@ -309,14 +436,15 @@ async function main() {
   // Convert proof to hex
   const proofHex = bytesToHex(proof) as Hex;
 
-  // Submit transfer
+  // Submit transfer with registryRoot and encrypted notes
   const transferHash = await privacyPool.write.transfer([
     proofHex,
     localRoot,
+    registryRoot,
     [nullifier0, nullifier1],
     [outputCommitment0, outputCommitment1],
     intentNullifier,
-    ['0x', '0x'], // empty encrypted notes for testing
+    [encryptedNote0, encryptedNote1],
   ]);
 
   console.log(`Transfer tx: ${transferHash}`);
@@ -368,8 +496,8 @@ async function main() {
 
   // Store recipient's note for withdrawal
   const recipientNote: Note = {
-    amount: output0Amount,
-    owner: output0Owner,
+    amount: transferAmount,
+    owner: txTo,
     randomness: output0Randomness,
     nullifierKeyHash: recipientNullifierKeyHash,
     commitment: outputCommitment0,
@@ -385,8 +513,7 @@ async function main() {
   console.log('Starting Withdrawal Phase');
   console.log('='.repeat(60));
 
-  // Setup recipient account
-  const recipientAccount = privateKeyToAccount(TEST_PRIVATE_KEY_1 as Hex);
+  // Use recipient account (already setup above)
   console.log(`\nRecipient withdrawing: ${recipientAccount.address}`);
 
   // Get recipient's ETH balance before withdrawal
@@ -454,9 +581,11 @@ async function main() {
   const phantomRandomness = randomBigInt();
   const phantomCommitment = computeCommitment(0n, BigInt(recipientAccount.address), phantomRandomness, recipientNullifierKeyHash);
 
-  // Compute nullifiers (using recipient's nullifier key, which is bound to commitment via nkHash)
-  const withdrawNullifier0 = computeNullifier(recipientNote.commitment, recipientNullifierKey);
-  const withdrawNullifier1 = computeNullifier(phantomCommitment, recipientNullifierKey);
+  // Compute nullifiers using new format
+  // Real note: hash4([NULLIFIER_DOMAIN, nk, leaf_index, randomness])
+  const withdrawNullifier0 = computeNullifier(recipientNullifierKey, recipientNote.leafIndex, recipientNote.randomness);
+  // Phantom note: hash4([PHANTOM_NULLIFIER_DOMAIN, nk, tx_nonce, 0]) - prevents nullifier poisoning
+  const withdrawNullifier1 = computePhantomNullifier(recipientNullifierKey, withdrawNonce);
   console.log(`Nullifier 0: ${withdrawNullifier0.toString(16).slice(0, 16)}...`);
   console.log(`Nullifier 1 (phantom): ${withdrawNullifier1.toString(16).slice(0, 16)}...`);
 
@@ -473,6 +602,28 @@ async function main() {
   );
   console.log(`Withdraw intent nullifier: ${withdrawIntentNullifier.toString(16).slice(0, 16)}...`);
 
+  // Get sender's (recipient from transfer) registry proof for withdraw
+  const senderRegistryProof = registryTree.generateProof(BigInt(recipientAccount.address));
+  if (!senderRegistryProof) {
+    throw new Error('Sender (recipient) not in registry');
+  }
+  console.log(`Sender registry leaf index: ${senderRegistryProof.leafIndex}`);
+
+  // Compute encrypted change note for withdraw
+  const withdrawEncSeed = deriveEncSeed(recipientNullifierKey);
+  const encryptedChangeNote: Cipher5 = await encryptNoteSelf(
+    withdrawEncSeed,
+    changeAmount,
+    BigInt(recipientAccount.address),
+    changeRandomness,
+    withdrawNonce
+  );
+  console.log(`Encrypted change note: [${encryptedChangeNote[0].toString(16).slice(0, 8)}...]`);
+
+  // Compute withdraw ciphertext hash
+  const withdrawCiphertextHash = ciphertextHash5(encryptedChangeNote);
+  console.log(`Withdraw ciphertext hash: ${withdrawCiphertextHash.toString(16).slice(0, 16)}...`);
+
   // Build withdraw circuit inputs
   // Phantom input uses amount=0 which triggers the circuit to skip merkle verification
   // The leaf_index and siblings can be any valid values (zeros work fine)
@@ -484,6 +635,8 @@ async function main() {
     intentNullifier: withdrawIntentNullifier,
     withdrawRecipient: BigInt(recipientAccount.address),
     withdrawAmount,
+    registryRoot,
+    ciphertextHash: withdrawCiphertextHash,
 
     signatureData: withdrawSignatureData,
     txNonce: withdrawNonce,
@@ -505,11 +658,19 @@ async function main() {
       siblings: Array(20).fill(0n), // Ignored since amount=0
     },
 
-    changeAmount,
     changeRandomness,
 
     // Nullifier key (for spending input notes and computing change commitment)
     nullifierKey: recipientNullifierKey,
+
+    // Sender's registry membership proof
+    senderProof: {
+      pubkeyX: senderRegistryProof.pubkeyX,
+      pubkeyY: senderRegistryProof.pubkeyY,
+      nkHash: senderRegistryProof.nkHash,
+      leafIndex: senderRegistryProof.leafIndex,
+      siblings: senderRegistryProof.siblings,
+    },
   };
 
   // ==================== GENERATE WITHDRAW PROOF ====================
@@ -530,12 +691,13 @@ async function main() {
   const withdrawHash = await privacyPool.write.withdraw([
     withdrawProofHex,
     localWithdrawRoot,
+    registryRoot,
     [withdrawNullifier0, withdrawNullifier1],
     changeCommitment,
     withdrawIntentNullifier,
     recipientAccount.address,
     withdrawAmount,
-    '0x', // empty encrypted change
+    encryptedChangeNote,
   ]);
 
   console.log(`Withdraw tx: ${withdrawHash}`);
@@ -592,10 +754,14 @@ async function main() {
   console.log(`  - Withdrawn: ${formatEther(withdrawAmount)} ETH to recipient`);
   console.log(`  - Withdraw proof: ${withdrawProofTime.toFixed(1)}s`);
   console.log(`  - All state verifications passed`);
+
+  // Cleanup
+  await destroyBarretenberg();
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   console.error('\n✗ E2E Test FAILED:');
   console.error(error);
+  await destroyBarretenberg();
   process.exit(1);
 });

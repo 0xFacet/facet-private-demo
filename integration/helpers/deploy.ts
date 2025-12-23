@@ -16,25 +16,30 @@ const __dirname = dirname(__filename);
 // Contract directory
 const CONTRACTS_DIR = resolve(__dirname, '../../contracts');
 
-// ABIs
+// ABIs - updated for in-circuit encryption with Grumpkin keys
 export const PRIVACY_POOL_ABI = parseAbi([
   'constructor(address _transferVerifier, address _withdrawVerifier, address _registry)',
   'function deposit(uint256 noteOwner, uint256 randomness, uint256 nullifierKeyHash, bytes encryptedNote) payable',
-  'function transfer(bytes proof, uint256 merkleRoot, uint256[2] nullifiers, uint256[2] outputCommitments, uint256 intentNullifier, bytes[2] encryptedNotes)',
-  'function withdraw(bytes proof, uint256 merkleRoot, uint256[2] nullifiers, uint256 changeCommitment, uint256 intentNullifier, address recipient, uint256 amount, bytes encryptedChange)',
+  'function transfer(bytes proof, uint256 merkleRoot, uint256 registryRoot, uint256[2] nullifiers, uint256[2] outputCommitments, uint256 intentNullifier, uint256[5][2] encryptedNotes)',
+  'function withdraw(bytes proof, uint256 merkleRoot, uint256 registryRoot, uint256[2] nullifiers, uint256 changeCommitment, uint256 intentNullifier, address recipient, uint256 amount, uint256[5] encryptedChange)',
   'function getLastRoot() view returns (uint256)',
   'function nextLeafIndex() view returns (uint256)',
   'function nullifierSpent(uint256) view returns (bool)',
   'function intentUsed(uint256) view returns (bool)',
   'function isKnownRoot(uint256) view returns (bool)',
   'event Deposit(uint256 indexed commitment, uint256 indexed leafIndex, uint256 amount, uint256 owner, uint256 randomness, bytes encryptedNote)',
-  'event Transfer(uint256[2] nullifiers, uint256[2] commitments, uint256[2] leafIndices, uint256 intentNullifier, bytes[2] encryptedNotes)',
+  'event Transfer(uint256[2] nullifiers, uint256[2] commitments, uint256[2] leafIndices, uint256 intentNullifier, uint256[5][2] encryptedNotes)',
+  'event Withdrawal(uint256[2] nullifiers, uint256 changeCommitment, uint256 changeLeafIndex, uint256 intentNullifier, address indexed recipient, uint256 amount, uint256[5] encryptedChange)',
 ]);
 
 export const REGISTRY_ABI = parseAbi([
-  'function register(bytes32 pubKeyX, bytes32 pubKeyY)',
+  'function register(uint256[2] encPublicKey, uint256 nullifierKeyHash)',
   'function isRegistered(address user) view returns (bool)',
-  'function getKey(address user) view returns (bytes32, bytes32)',
+  'function getEncryptionKey(address user) view returns (uint256[2])',
+  'function getNullifierKeyHash(address user) view returns (uint256)',
+  'function getLatestRoot() view returns (uint256)',
+  'function isKnownRoot(uint256 root) view returns (bool)',
+  'event UserRegistered(address indexed user, uint256[2] encPublicKey, uint256 nullifierKeyHash, uint256 indexed leafIndex)',
 ]);
 
 export const VERIFIER_ABI = parseAbi([

@@ -40,47 +40,57 @@ export interface SignatureData {
 }
 
 /**
- * Transfer circuit inputs
+ * Registry proof for recipient membership
+ */
+export interface RegistryProof {
+  pubkeyX: bigint;
+  pubkeyY: bigint;
+  nkHash: bigint;
+  leafIndex: number;
+  siblings: bigint[];
+}
+
+/**
+ * Transfer circuit inputs - matches circuits/transfer/src/main.nr
  */
 export interface TransferCircuitInputs {
-  // Public inputs
+  // ===== PUBLIC INPUTS (8 total) =====
   merkleRoot: bigint;
   nullifier0: bigint;
   nullifier1: bigint;
   outputCommitment0: bigint;
   outputCommitment1: bigint;
   intentNullifier: bigint;
+  registryRoot: bigint;        // NEW: registry tree root
+  ciphertextHash: bigint;      // NEW: hash of encrypted notes
 
-  // Private inputs
+  // ===== PRIVATE INPUTS =====
   signatureData: SignatureData;
   txNonce: bigint;
+  txTo: bigint;
+  txValue: bigint;
   txMaxPriorityFee: bigint;
   txMaxFee: bigint;
   txGasLimit: bigint;
-  txTo: bigint;
-  txValue: bigint;
 
   input0: NoteInput;
   input1: NoteInput;
 
-  output0Amount: bigint;
-  output0Owner: bigint;
   output0Randomness: bigint;
-
-  output1Amount: bigint;
   output1Randomness: bigint;
 
-  // Nullifier key (private - bound to commitment via nkHash)
+  // Nullifier key
   nullifierKey: bigint;
-  // Recipient's nullifier key hash (for output note 0)
-  output0NullifierKeyHash: bigint;
+
+  // Registry membership proof for recipient
+  recipientProof: RegistryProof;
 }
 
 /**
- * Withdraw circuit inputs
+ * Withdraw circuit inputs - matches circuits/withdraw/src/main.nr
  */
 export interface WithdrawCircuitInputs {
-  // Public inputs
+  // ===== PUBLIC INPUTS (9 total) =====
   merkleRoot: bigint;
   nullifier0: bigint;
   nullifier1: bigint;
@@ -88,8 +98,10 @@ export interface WithdrawCircuitInputs {
   intentNullifier: bigint;
   withdrawRecipient: bigint;  // Must equal signer address
   withdrawAmount: bigint;
+  registryRoot: bigint;       // NEW: registry tree root
+  ciphertextHash: bigint;     // NEW: hash of encrypted change note
 
-  // Private inputs
+  // ===== PRIVATE INPUTS =====
   signatureData: SignatureData;
   txNonce: bigint;
   txMaxPriorityFee: bigint;
@@ -99,11 +111,13 @@ export interface WithdrawCircuitInputs {
   input0: NoteInput;
   input1: NoteInput;
 
-  changeAmount: bigint;
   changeRandomness: bigint;
 
-  // Nullifier key (private - bound to commitment via nkHash)
+  // Nullifier key
   nullifierKey: bigint;
+
+  // Sender's registry membership proof
+  senderProof: RegistryProof;
 }
 
 /**
@@ -144,18 +158,21 @@ function toNoirFieldArray(values: bigint[]): string[] {
 }
 
 /**
- * Build circuit inputs object for Noir
+ * Build circuit inputs object for Noir - matches circuits/transfer/src/main.nr
  */
 export function buildTransferInputs(inputs: TransferCircuitInputs): Record<string, any> {
   return {
-    // Public inputs
+    // ===== PUBLIC INPUTS (8 total) =====
     merkle_root: toNoirField(inputs.merkleRoot),
     nullifier_0: toNoirField(inputs.nullifier0),
     nullifier_1: toNoirField(inputs.nullifier1),
     output_commitment_0: toNoirField(inputs.outputCommitment0),
     output_commitment_1: toNoirField(inputs.outputCommitment1),
     intent_nullifier: toNoirField(inputs.intentNullifier),
+    registry_root: toNoirField(inputs.registryRoot),
+    ciphertext_hash_pub: toNoirField(inputs.ciphertextHash),
 
+    // ===== PRIVATE INPUTS =====
     // Signature
     pub_key_x: toNoirByteArray(inputs.signatureData.pubKeyX),
     pub_key_y: toNoirByteArray(inputs.signatureData.pubKeyY),
@@ -163,11 +180,11 @@ export function buildTransferInputs(inputs: TransferCircuitInputs): Record<strin
 
     // Transaction fields
     tx_nonce: inputs.txNonce.toString(),
+    tx_to: toNoirField(inputs.txTo),
+    tx_value: inputs.txValue.toString(),
     tx_max_priority_fee: inputs.txMaxPriorityFee.toString(),
     tx_max_fee: inputs.txMaxFee.toString(),
     tx_gas_limit: inputs.txGasLimit.toString(),
-    tx_to: toNoirField(inputs.txTo),
-    tx_value: inputs.txValue.toString(),
 
     // Input note 0
     input_0_amount: inputs.input0.amount.toString(),
@@ -181,19 +198,19 @@ export function buildTransferInputs(inputs: TransferCircuitInputs): Record<strin
     input_1_leaf_index: inputs.input1.leafIndex.toString(),
     input_1_siblings: toNoirFieldArray(inputs.input1.siblings),
 
-    // Output note 0
-    output_0_amount: inputs.output0Amount.toString(),
-    output_0_owner: toNoirField(inputs.output0Owner),
+    // Output note randomness
     output_0_randomness: toNoirField(inputs.output0Randomness),
-
-    // Output note 1
-    output_1_amount: inputs.output1Amount.toString(),
     output_1_randomness: toNoirField(inputs.output1Randomness),
 
-    // Nullifier key (for spending input notes and computing change commitment)
+    // Nullifier key
     nullifier_key: toNoirField(inputs.nullifierKey),
-    // Recipient's nullifier key hash (for output note 0)
-    output_0_nullifier_key_hash: toNoirField(inputs.output0NullifierKeyHash),
+
+    // Registry membership proof for recipient
+    recipient_pubkey_x: toNoirField(inputs.recipientProof.pubkeyX),
+    recipient_pubkey_y: toNoirField(inputs.recipientProof.pubkeyY),
+    recipient_nk_hash: toNoirField(inputs.recipientProof.nkHash),
+    recipient_leaf_index: inputs.recipientProof.leafIndex.toString(),
+    recipient_siblings: toNoirFieldArray(inputs.recipientProof.siblings),
   };
 }
 
@@ -222,7 +239,7 @@ export async function generateTransferProof(inputs: TransferCircuitInputs): Prom
 
   console.log('Proof generated successfully!');
 
-  // Extract public inputs in order
+  // Extract public inputs in order (8 total - must match circuit declaration order)
   const publicInputs = [
     inputs.merkleRoot,
     inputs.nullifier0,
@@ -230,6 +247,8 @@ export async function generateTransferProof(inputs: TransferCircuitInputs): Prom
     inputs.outputCommitment0,
     inputs.outputCommitment1,
     inputs.intentNullifier,
+    inputs.registryRoot,
+    inputs.ciphertextHash,
   ];
 
   return {
@@ -239,19 +258,22 @@ export async function generateTransferProof(inputs: TransferCircuitInputs): Prom
 }
 
 /**
- * Build circuit inputs object for Noir (withdraw circuit)
+ * Build circuit inputs object for Noir (withdraw circuit) - matches circuits/withdraw/src/main.nr
  */
 export function buildWithdrawInputs(inputs: WithdrawCircuitInputs): Record<string, any> {
   return {
-    // Public inputs
+    // ===== PUBLIC INPUTS (9 total) =====
     merkle_root: toNoirField(inputs.merkleRoot),
     nullifier_0: toNoirField(inputs.nullifier0),
     nullifier_1: toNoirField(inputs.nullifier1),
     change_commitment: toNoirField(inputs.changeCommitment),
     intent_nullifier: toNoirField(inputs.intentNullifier),
     withdraw_recipient: toNoirField(inputs.withdrawRecipient),
-    withdraw_amount: inputs.withdrawAmount.toString(),
+    withdraw_amount: toNoirField(inputs.withdrawAmount),
+    registry_root: toNoirField(inputs.registryRoot),
+    ciphertext_hash_pub: toNoirField(inputs.ciphertextHash),
 
+    // ===== PRIVATE INPUTS =====
     // Signature
     pub_key_x: toNoirByteArray(inputs.signatureData.pubKeyX),
     pub_key_y: toNoirByteArray(inputs.signatureData.pubKeyY),
@@ -276,11 +298,16 @@ export function buildWithdrawInputs(inputs: WithdrawCircuitInputs): Record<strin
     input_1_siblings: toNoirFieldArray(inputs.input1.siblings),
 
     // Change note
-    change_amount: inputs.changeAmount.toString(),
     change_randomness: toNoirField(inputs.changeRandomness),
 
-    // Nullifier key (for spending input notes and computing change commitment)
+    // Nullifier key
     nullifier_key: toNoirField(inputs.nullifierKey),
+
+    // Sender's registry membership proof
+    sender_pubkey_x: toNoirField(inputs.senderProof.pubkeyX),
+    sender_pubkey_y: toNoirField(inputs.senderProof.pubkeyY),
+    sender_leaf_index: inputs.senderProof.leafIndex.toString(),
+    sender_siblings: toNoirFieldArray(inputs.senderProof.siblings),
   };
 }
 
@@ -309,7 +336,7 @@ export async function generateWithdrawProof(inputs: WithdrawCircuitInputs): Prom
 
   console.log('Proof generated successfully!');
 
-  // Extract public inputs in order
+  // Extract public inputs in order (9 total - must match circuit declaration order)
   const publicInputs = [
     inputs.merkleRoot,
     inputs.nullifier0,
@@ -318,6 +345,8 @@ export async function generateWithdrawProof(inputs: WithdrawCircuitInputs): Prom
     inputs.intentNullifier,
     inputs.withdrawRecipient,
     inputs.withdrawAmount,
+    inputs.registryRoot,
+    inputs.ciphertextHash,
   ];
 
   return {

@@ -31,8 +31,8 @@ export class MerkleTree {
     this.nextIndex = 0;
 
     // Initialize zeros (same as contract)
-    // zeros[0] = poseidon(0, 0)
-    this.zeros[0] = poseidon2([0n, 0n]);
+    // CRITICAL: Empty leaf is 0, NOT hash(0,0) - must match PrivacyPool.sol
+    this.zeros[0] = 0n;
     for (let i = 1; i < depth; i++) {
       this.zeros[i] = poseidon2([this.zeros[i - 1], this.zeros[i - 1]]);
     }

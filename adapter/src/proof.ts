@@ -24,16 +24,29 @@ export interface SignatureData {
 }
 
 /**
+ * Registry membership proof
+ */
+export interface RegistryProof {
+  pubkeyX: bigint;
+  pubkeyY: bigint;
+  nkHash: bigint;
+  leafIndex: number;
+  siblings: bigint[];
+}
+
+/**
  * Transfer circuit inputs
  */
 export interface TransferCircuitInputs {
-  // Public inputs
+  // Public inputs (8 total)
   merkleRoot: bigint;
   nullifier0: bigint;
   nullifier1: bigint;
   outputCommitment0: bigint;
   outputCommitment1: bigint;
   intentNullifier: bigint;
+  registryRoot: bigint;
+  ciphertextHash: bigint;
 
   // Private inputs
   signatureData: SignatureData;
@@ -44,27 +57,29 @@ export interface TransferCircuitInputs {
   txTo: bigint;
   txValue: bigint;
 
-  input0: NoteInput;
-  input1: NoteInput;
+  // Input notes (with owner address and nkHash for verification)
+  input0: NoteInput & { owner: bigint; nullifierKeyHash: bigint };
+  input1: NoteInput & { owner: bigint; nullifierKeyHash: bigint };
 
+  // Output notes
   output0Amount: bigint;
-  output0Owner: bigint;
   output0Randomness: bigint;
 
   output1Amount: bigint;
   output1Randomness: bigint;
 
-  // Nullifier key (private - bound to commitment via nkHash)
+  // Keys
   nullifierKey: bigint;
-  // Recipient's nullifier key hash (for output note 0)
-  output0NullifierKeyHash: bigint;
+
+  // Recipient registry membership proof
+  recipientProof: RegistryProof;
 }
 
 /**
  * Withdraw circuit inputs
  */
 export interface WithdrawCircuitInputs {
-  // Public inputs
+  // Public inputs (9 total)
   merkleRoot: bigint;
   nullifier0: bigint;
   nullifier1: bigint;
@@ -72,6 +87,8 @@ export interface WithdrawCircuitInputs {
   intentNullifier: bigint;
   withdrawRecipient: bigint;
   withdrawAmount: bigint;
+  registryRoot: bigint;
+  ciphertextHash: bigint;
 
   // Private inputs
   signatureData: SignatureData;
@@ -80,14 +97,17 @@ export interface WithdrawCircuitInputs {
   txMaxFee: bigint;
   txGasLimit: bigint;
 
-  input0: NoteInput;
-  input1: NoteInput;
+  // Input notes (with owner address and nkHash for verification)
+  input0: NoteInput & { owner: bigint; nullifierKeyHash: bigint };
+  input1: NoteInput & { owner: bigint; nullifierKeyHash: bigint };
 
-  changeAmount: bigint;
   changeRandomness: bigint;
 
-  // Nullifier key (private - bound to commitment via nkHash)
+  // Keys
   nullifierKey: bigint;
+
+  // Sender's registry membership proof
+  senderProof: RegistryProof;
 }
 
 /**
@@ -113,16 +133,19 @@ function toNoirFieldArray(values: bigint[]): string[] {
 
 /**
  * Build circuit inputs object for Noir
+ * Note: owner and nullifierKeyHash are derived in-circuit from signature, not passed
  */
 export function buildTransferInputs(inputs: TransferCircuitInputs): Record<string, any> {
   return {
-    // Public inputs
+    // Public inputs (8)
     merkle_root: toNoirField(inputs.merkleRoot),
     nullifier_0: toNoirField(inputs.nullifier0),
     nullifier_1: toNoirField(inputs.nullifier1),
     output_commitment_0: toNoirField(inputs.outputCommitment0),
     output_commitment_1: toNoirField(inputs.outputCommitment1),
     intent_nullifier: toNoirField(inputs.intentNullifier),
+    registry_root: toNoirField(inputs.registryRoot),
+    ciphertext_hash_pub: toNoirField(inputs.ciphertextHash),
 
     // Signature
     pub_key_x: toNoirByteArray(inputs.signatureData.pubKeyX),
@@ -137,40 +160,41 @@ export function buildTransferInputs(inputs: TransferCircuitInputs): Record<strin
     tx_to: toNoirField(inputs.txTo),
     tx_value: inputs.txValue.toString(),
 
-    // Input note 0
+    // Input note 0 (owner/nkHash derived from signature in circuit)
     input_0_amount: inputs.input0.amount.toString(),
     input_0_randomness: toNoirField(inputs.input0.randomness),
     input_0_leaf_index: inputs.input0.leafIndex.toString(),
     input_0_siblings: toNoirFieldArray(inputs.input0.siblings),
 
-    // Input note 1
+    // Input note 1 (owner/nkHash derived from signature in circuit)
     input_1_amount: inputs.input1.amount.toString(),
     input_1_randomness: toNoirField(inputs.input1.randomness),
     input_1_leaf_index: inputs.input1.leafIndex.toString(),
     input_1_siblings: toNoirFieldArray(inputs.input1.siblings),
 
-    // Output note 0
-    output_0_amount: inputs.output0Amount.toString(),
-    output_0_owner: toNoirField(inputs.output0Owner),
+    // Output note randomness (amounts computed in-circuit)
     output_0_randomness: toNoirField(inputs.output0Randomness),
-
-    // Output note 1
-    output_1_amount: inputs.output1Amount.toString(),
     output_1_randomness: toNoirField(inputs.output1Randomness),
 
-    // Nullifier key (for spending input notes and computing change commitment)
+    // Nullifier key
     nullifier_key: toNoirField(inputs.nullifierKey),
-    // Recipient's nullifier key hash (for output note 0)
-    output_0_nullifier_key_hash: toNoirField(inputs.output0NullifierKeyHash),
+
+    // Recipient registry membership proof
+    recipient_pubkey_x: toNoirField(inputs.recipientProof.pubkeyX),
+    recipient_pubkey_y: toNoirField(inputs.recipientProof.pubkeyY),
+    recipient_nk_hash: toNoirField(inputs.recipientProof.nkHash),
+    recipient_leaf_index: inputs.recipientProof.leafIndex.toString(),
+    recipient_siblings: toNoirFieldArray(inputs.recipientProof.siblings),
   };
 }
 
 /**
  * Build circuit inputs object for Noir (withdraw circuit)
+ * Note: owner and nullifierKeyHash are derived in-circuit from signature, not passed
  */
 export function buildWithdrawInputs(inputs: WithdrawCircuitInputs): Record<string, any> {
   return {
-    // Public inputs
+    // Public inputs (9)
     merkle_root: toNoirField(inputs.merkleRoot),
     nullifier_0: toNoirField(inputs.nullifier0),
     nullifier_1: toNoirField(inputs.nullifier1),
@@ -178,6 +202,8 @@ export function buildWithdrawInputs(inputs: WithdrawCircuitInputs): Record<strin
     intent_nullifier: toNoirField(inputs.intentNullifier),
     withdraw_recipient: toNoirField(inputs.withdrawRecipient),
     withdraw_amount: inputs.withdrawAmount.toString(),
+    registry_root: toNoirField(inputs.registryRoot),
+    ciphertext_hash_pub: toNoirField(inputs.ciphertextHash),
 
     // Signature
     pub_key_x: toNoirByteArray(inputs.signatureData.pubKeyX),
@@ -190,24 +216,29 @@ export function buildWithdrawInputs(inputs: WithdrawCircuitInputs): Record<strin
     tx_max_fee: inputs.txMaxFee.toString(),
     tx_gas_limit: inputs.txGasLimit.toString(),
 
-    // Input note 0
+    // Input note 0 (owner/nkHash derived from signature in circuit)
     input_0_amount: inputs.input0.amount.toString(),
     input_0_randomness: toNoirField(inputs.input0.randomness),
     input_0_leaf_index: inputs.input0.leafIndex.toString(),
     input_0_siblings: toNoirFieldArray(inputs.input0.siblings),
 
-    // Input note 1
+    // Input note 1 (owner/nkHash derived from signature in circuit)
     input_1_amount: inputs.input1.amount.toString(),
     input_1_randomness: toNoirField(inputs.input1.randomness),
     input_1_leaf_index: inputs.input1.leafIndex.toString(),
     input_1_siblings: toNoirFieldArray(inputs.input1.siblings),
 
-    // Change note
-    change_amount: inputs.changeAmount.toString(),
+    // Change note randomness (amount computed in-circuit)
     change_randomness: toNoirField(inputs.changeRandomness),
 
-    // Nullifier key (for spending input notes and computing change commitment)
+    // Nullifier key
     nullifier_key: toNoirField(inputs.nullifierKey),
+
+    // Sender's registry membership proof
+    sender_pubkey_x: toNoirField(inputs.senderProof.pubkeyX),
+    sender_pubkey_y: toNoirField(inputs.senderProof.pubkeyY),
+    sender_leaf_index: inputs.senderProof.leafIndex.toString(),
+    sender_siblings: toNoirFieldArray(inputs.senderProof.siblings),
   };
 }
 
@@ -286,6 +317,8 @@ export async function generateTransferProofWorker(inputs: TransferCircuitInputs)
       inputs.outputCommitment0,
       inputs.outputCommitment1,
       inputs.intentNullifier,
+      inputs.registryRoot,
+      inputs.ciphertextHash,
     ],
   };
 }
@@ -313,6 +346,8 @@ export async function generateWithdrawProofWorker(inputs: WithdrawCircuitInputs)
       inputs.intentNullifier,
       inputs.withdrawRecipient,
       inputs.withdrawAmount,
+      inputs.registryRoot,
+      inputs.ciphertextHash,
     ],
   };
 }

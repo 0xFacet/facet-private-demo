@@ -92,11 +92,19 @@ The L2 chain ID is **13371337**.
 
 | Component | Trusted for... | NOT trusted for... |
 |-----------|----------------|-------------------|
-| **Adapter** | Privacy (sees all your notes) | Spending (can't forge your signature) |
+| **Adapter** | Privacy (sees all your notes), Auto-registration | Spending (can't forge your signature) |
 | **L1 Contract** | Proof verification | Nothing else — trustless |
 | **MetaMask** | Key custody | N/A |
 
 The adapter is like a privacy-preserving RPC node. It can see your balance, but every spend requires your MetaMask signature verified inside the ZK circuit.
+
+### RecipientRegistry
+
+The RecipientRegistry stores encryption public keys for each registered user, enabling:
+- **Encrypted transfers**: Senders encrypt notes to recipients using their registered Grumpkin public key
+- **Registry membership proofs**: The circuit verifies both sender (for withdraws) and recipient (for transfers) are registered
+
+When you sign the "Register Viewing Key" message, the adapter derives your encryption keypair and automatically registers it on L1 via a trusted relayer. This happens transparently — you just wait a few seconds for the L1 transaction to confirm.
 
 ---
 
@@ -113,7 +121,7 @@ The adapter is like a privacy-preserving RPC node. It can see your balance, but 
 
 2. **Connect Wallet** — Click the button and approve in MetaMask
 
-3. **Register Viewing Key** — Sign a message to derive your encryption keys. This is a one-time setup that lets the adapter decrypt notes sent to you.
+3. **Register Viewing Key** — Sign a message to derive your encryption keys. This is a one-time setup that registers you on-chain and lets the adapter decrypt notes sent to you. The adapter auto-registers you in the RecipientRegistry (takes a few seconds for the L1 tx to confirm).
 
 4. **Deposit** — Enter an amount and click "Deposit to L2". You'll sign a transaction on Sepolia that adds shielded ETH to your balance.
 
@@ -285,9 +293,9 @@ A note commitment is: `poseidon(amount, owner, randomness, nullifierKeyHash)`
 
 ### Nullifier Scheme
 
-When spending a note, the circuit computes: `nullifier = poseidon(commitment, nullifierKey)`
+When spending a note, the circuit computes: `nullifier = hash(NULLIFIER_DOMAIN, nullifierKey, leafIndex, randomness)`
 
-The `nullifierKey` is derived from the user's signature during registration and never revealed on-chain. Only its hash (`nullifierKeyHash`) is stored in the registry and embedded in commitments.
+The `nullifierKey` is derived from the user's signature during registration and never revealed on-chain. Only its hash (`nullifierKeyHash`) is stored in the registry and embedded in commitments. The nullifier binds to both the note's position (leafIndex) and its randomness, ensuring uniqueness.
 
 This means:
 - Only the note owner can compute the nullifier (they have the key)
@@ -297,13 +305,16 @@ This means:
 ### Circuit Constraints
 
 The transfer circuit proves:
-1. Input notes exist in the merkle tree
+1. Input notes exist in the pool merkle tree
 2. Nullifiers are correctly computed from notes + nullifier key
 3. ECDSA signature over the transaction is valid
 4. Signer owns the input notes
 5. Output commitments are correctly formed
 6. Value is conserved (inputs = outputs)
 7. Intent nullifier prevents replay
+8. Recipient is registered in the RecipientRegistry (merkle membership proof)
+
+The withdraw circuit additionally proves the sender is registered in the RecipientRegistry.
 
 ### Why "No User Proofs"?
 
@@ -341,7 +352,7 @@ facet-private-demo/
 A: No. This is a demo that proves the core innovation works. The full Facet Private L2 is a larger effort that builds on these primitives.
 
 **Q: Can the adapter steal my funds?**
-A: No. Every spend requires your ECDSA signature, verified inside the ZK circuit. The adapter can see your balance but cannot forge signatures.
+A: No. Every spend requires your ECDSA signature, verified inside the ZK circuit. The adapter can see your balance but cannot forge signatures. Even though the adapter auto-registers you, this only sets up your encryption key — it doesn't give anyone spending authority over your funds.
 
 **Q: What if the adapter goes down?**
 A: Your funds are safe in the L1 contract. You'd need to run your own adapter (or wait for it to come back) to generate proofs for transfers/withdrawals.

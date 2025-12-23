@@ -8,11 +8,14 @@ import {RecipientRegistry} from "../src/RecipientRegistry.sol";
 contract DeployRegistryScript is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
+        address deployer = vm.addr(deployerPrivateKey);
 
         vm.startBroadcast(deployerPrivateKey);
 
-        RecipientRegistry registry = new RecipientRegistry();
+        // Deployer is the trusted relayer for auto-registration
+        RecipientRegistry registry = new RecipientRegistry(deployer);
         console.log("RecipientRegistry:", address(registry));
+        console.log("Relayer:", deployer);
 
         vm.stopBroadcast();
     }

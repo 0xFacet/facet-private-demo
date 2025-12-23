@@ -14,11 +14,13 @@ contract DeployScript is Script {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         bool useMock = vm.envOr("USE_MOCK_VERIFIER", false);
 
+        address deployer = vm.addr(deployerPrivateKey);
         vm.startBroadcast(deployerPrivateKey);
 
-        // Deploy Registry
-        RecipientRegistry registry = new RecipientRegistry();
+        // Deploy Registry (deployer is the trusted relayer for auto-registration)
+        RecipientRegistry registry = new RecipientRegistry(deployer);
         console.log("RecipientRegistry:", address(registry));
+        console.log("Relayer:", deployer);
 
         address transferVerifier;
         address withdrawVerifier;

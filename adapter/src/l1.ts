@@ -71,10 +71,11 @@ export const PRIVACY_POOL_ABI = [
     inputs: [
       { name: 'proof', type: 'bytes' },
       { name: 'merkleRoot', type: 'uint256' },
+      { name: 'registryRoot', type: 'uint256' },
       { name: 'nullifiers', type: 'uint256[2]' },
       { name: 'outputCommitments', type: 'uint256[2]' },
       { name: 'intentNullifier', type: 'uint256' },
-      { name: 'encryptedNotes', type: 'bytes[2]' },
+      { name: 'encryptedNotes', type: 'uint256[5][2]' },
     ],
     outputs: [],
   },
@@ -86,12 +87,13 @@ export const PRIVACY_POOL_ABI = [
     inputs: [
       { name: 'proof', type: 'bytes' },
       { name: 'merkleRoot', type: 'uint256' },
+      { name: 'registryRoot', type: 'uint256' },
       { name: 'nullifiers', type: 'uint256[2]' },
       { name: 'changeCommitment', type: 'uint256' },
       { name: 'intentNullifier', type: 'uint256' },
       { name: 'recipient', type: 'address' },
       { name: 'amount', type: 'uint256' },
-      { name: 'encryptedChange', type: 'bytes' },
+      { name: 'encryptedChange', type: 'uint256[5]' },
     ],
     outputs: [],
   },
@@ -119,7 +121,7 @@ export const PRIVACY_POOL_EVENTS = {
       { name: 'commitments', type: 'uint256[2]', indexed: false },
       { name: 'leafIndices', type: 'uint256[2]', indexed: false },
       { name: 'intentNullifier', type: 'uint256', indexed: false },
-      { name: 'encryptedNotes', type: 'bytes[2]', indexed: false },
+      { name: 'encryptedNotes', type: 'uint256[5][2]', indexed: false },
     ],
   },
   Withdrawal: {
@@ -132,7 +134,7 @@ export const PRIVACY_POOL_EVENTS = {
       { name: 'intentNullifier', type: 'uint256', indexed: false },
       { name: 'recipient', type: 'address', indexed: true },
       { name: 'amount', type: 'uint256', indexed: false },
-      { name: 'encryptedChange', type: 'bytes', indexed: false },
+      { name: 'encryptedChange', type: 'uint256[5]', indexed: false },
     ],
   },
 } as const;
@@ -166,16 +168,20 @@ export async function getContractRoot(blockNumber?: bigint): Promise<bigint> {
   return root as bigint;
 }
 
+// Type alias for encrypted note (5 field elements)
+export type EncryptedNote = [bigint, bigint, bigint, bigint, bigint];
+
 /**
  * Submit a transfer to L1
  */
 export async function submitTransfer(
   proof: Uint8Array,
   merkleRoot: bigint,
+  registryRoot: bigint,
   nullifiers: [bigint, bigint],
   outputCommitments: [bigint, bigint],
   intentNullifier: bigint,
-  encryptedNotes: [Hex, Hex] = ['0x', '0x']
+  encryptedNotes: [EncryptedNote, EncryptedNote]
 ): Promise<Hex> {
   if (!relayer) {
     throw new Error('Relayer not configured - set RELAYER_PRIVATE_KEY');
@@ -187,7 +193,7 @@ export async function submitTransfer(
     address: CONTRACTS.privacyPool as Hex,
     abi: PRIVACY_POOL_ABI,
     functionName: 'transfer',
-    args: [proofHex, merkleRoot, nullifiers, outputCommitments, intentNullifier, encryptedNotes],
+    args: [proofHex, merkleRoot, registryRoot, nullifiers, outputCommitments, intentNullifier, encryptedNotes],
   });
 
   console.log(`[L1] Transfer submitted: ${hash}`);
@@ -200,12 +206,13 @@ export async function submitTransfer(
 export async function submitWithdraw(
   proof: Uint8Array,
   merkleRoot: bigint,
+  registryRoot: bigint,
   nullifiers: [bigint, bigint],
   changeCommitment: bigint,
   intentNullifier: bigint,
   recipient: Hex,
   amount: bigint,
-  encryptedChange: Hex = '0x'
+  encryptedChange: EncryptedNote
 ): Promise<Hex> {
   if (!relayer) {
     throw new Error('Relayer not configured - set RELAYER_PRIVATE_KEY');
@@ -217,7 +224,7 @@ export async function submitWithdraw(
     address: CONTRACTS.privacyPool as Hex,
     abi: PRIVACY_POOL_ABI,
     functionName: 'withdraw',
-    args: [proofHex, merkleRoot, nullifiers, changeCommitment, intentNullifier, recipient, amount, encryptedChange],
+    args: [proofHex, merkleRoot, registryRoot, nullifiers, changeCommitment, intentNullifier, recipient, amount, encryptedChange],
   });
 
   console.log(`[L1] Withdraw submitted: ${hash}`);
@@ -286,28 +293,48 @@ export function getRelayerAddress(): Hex | null {
   return relayer?.account?.address ?? null;
 }
 
-// Registry ABI
+// Registry ABI (RecipientRegistry with Grumpkin keys and Merkle tree)
 const REGISTRY_ABI = [
+  // Registration (uses msg.sender, not passed address)
   {
     name: 'register',
     type: 'function',
     stateMutability: 'nonpayable',
     inputs: [
-      { name: 'user', type: 'address' },
-      { name: 'pkEnc', type: 'bytes' },
+      { name: 'encPublicKey', type: 'uint256[2]' },
       { name: 'nullifierKeyHash', type: 'uint256' },
     ],
-    outputs: [],
+    outputs: [{ name: 'leafIndex', type: 'uint256' }],
   },
+  // Trusted relayer registration (for auto-registration during session creation)
+  {
+    name: 'registerFor',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'user', type: 'address' },
+      { name: 'encPublicKey', type: 'uint256[2]' },
+      { name: 'nullifierKeyHash', type: 'uint256' },
+    ],
+    outputs: [{ name: 'leafIndex', type: 'uint256' }],
+  },
+  // View functions
   {
     name: 'getEncryptionKey',
     type: 'function',
     stateMutability: 'view',
     inputs: [{ name: 'user', type: 'address' }],
-    outputs: [{ name: '', type: 'bytes' }],
+    outputs: [{ name: '', type: 'uint256[2]' }],
   },
   {
     name: 'getNullifierKeyHash',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'user', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    name: 'getLeafIndex',
     type: 'function',
     stateMutability: 'view',
     inputs: [{ name: 'user', type: 'address' }],
@@ -320,45 +347,73 @@ const REGISTRY_ABI = [
     inputs: [{ name: 'user', type: 'address' }],
     outputs: [{ name: '', type: 'bool' }],
   },
+  // Merkle tree functions
+  {
+    name: 'currentRoot',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    name: 'isKnownRoot',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'root', type: 'uint256' }],
+    outputs: [{ name: '', type: 'bool' }],
+  },
+  {
+    name: 'nextLeafIndex',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    name: 'zeros',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'depth', type: 'uint256' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
 ] as const;
 
-/**
- * Register encryption public key and nullifier key hash in registry
- * @param user Address to register
- * @param pkEnc 33-byte compressed secp256k1 encryption public key
- * @param nullifierKeyHash Hash of user's nullifier key (poseidon(nullifierKey, 1))
- */
-export async function registerEncryptionKey(user: Hex, pkEnc: Hex, nullifierKeyHash: bigint): Promise<Hex> {
-  if (!relayer) {
-    throw new Error('Relayer not configured');
-  }
-
-  const hash = await relayer.writeContract({
-    address: CONTRACTS.registry as Hex,
-    abi: REGISTRY_ABI,
-    functionName: 'register',
-    args: [user, pkEnc, nullifierKeyHash],
-  });
-
-  console.log(`[L1] Registry register submitted: ${hash}`);
-  return hash;
-}
+// Registry event ABI
+export const REGISTRY_EVENTS = {
+  UserRegistered: {
+    type: 'event',
+    name: 'UserRegistered',
+    inputs: [
+      { name: 'user', type: 'address', indexed: true },
+      { name: 'encPublicKey', type: 'uint256[2]', indexed: false },
+      { name: 'nullifierKeyHash', type: 'uint256', indexed: false },
+      { name: 'leafIndex', type: 'uint256', indexed: true },
+    ],
+  },
+} as const;
 
 /**
- * Get encryption public key from registry (returns 33-byte compressed key as hex)
+ * Get Grumpkin encryption public key from registry
+ * @param user Address to look up
+ * @returns [x, y] Grumpkin curve point or null if not registered
  */
-export async function getEncryptionKey(user: Hex): Promise<Hex | null> {
-  const result = await l1Public.readContract({
-    address: CONTRACTS.registry as Hex,
-    abi: REGISTRY_ABI,
-    functionName: 'getEncryptionKey',
-    args: [user],
-  }) as Hex;
+export async function getEncryptionKey(user: Hex): Promise<[bigint, bigint] | null> {
+  try {
+    const result = await l1Public.readContract({
+      address: CONTRACTS.registry as Hex,
+      abi: REGISTRY_ABI,
+      functionName: 'getEncryptionKey',
+      args: [user],
+    }) as [bigint, bigint];
 
-  if (!result || result === '0x' || result.length !== 68) { // 0x + 66 chars = 33 bytes
+    // Check if key is zero (not registered)
+    if (result[0] === 0n && result[1] === 0n) {
+      return null;
+    }
+    return result;
+  } catch {
     return null;
   }
-  return result;
 }
 
 /**
@@ -377,6 +432,21 @@ export async function getNullifierKeyHash(user: Hex): Promise<bigint> {
 }
 
 /**
+ * Get leaf index from registry
+ * @param user Address to look up
+ * @returns Leaf index (0 if not registered - must check isRegistered separately)
+ */
+export async function getRegistryLeafIndex(user: Hex): Promise<number> {
+  const result = await l1Public.readContract({
+    address: CONTRACTS.registry as Hex,
+    abi: REGISTRY_ABI,
+    functionName: 'getLeafIndex',
+    args: [user],
+  });
+  return Number(result as bigint);
+}
+
+/**
  * Check if user is registered
  */
 export async function isUserRegistered(user: Hex): Promise<boolean> {
@@ -386,4 +456,119 @@ export async function isUserRegistered(user: Hex): Promise<boolean> {
     functionName: 'isRegistered',
     args: [user],
   });
+}
+
+/**
+ * Get the current registry Merkle root
+ */
+export async function getRegistryRoot(blockNumber?: bigint): Promise<bigint> {
+  const result = await l1Public.readContract({
+    address: CONTRACTS.registry as Hex,
+    abi: REGISTRY_ABI,
+    functionName: 'currentRoot',
+    blockNumber,
+  });
+  return result as bigint;
+}
+
+/**
+ * Check if a registry root is known/valid
+ */
+export async function isKnownRegistryRoot(root: bigint): Promise<boolean> {
+  return await l1Public.readContract({
+    address: CONTRACTS.registry as Hex,
+    abi: REGISTRY_ABI,
+    functionName: 'isKnownRoot',
+    args: [root],
+  });
+}
+
+/**
+ * Get full registry data for a user
+ */
+export async function getRegistryEntry(user: Hex): Promise<{
+  pubkeyX: bigint;
+  pubkeyY: bigint;
+  nkHash: bigint;
+  leafIndex: number;
+} | null> {
+  const registered = await isUserRegistered(user);
+  if (!registered) {
+    return null;
+  }
+
+  const [pubkey, nkHash, leafIndex] = await Promise.all([
+    getEncryptionKey(user),
+    getNullifierKeyHash(user),
+    getRegistryLeafIndex(user),
+  ]);
+
+  if (!pubkey) {
+    return null;
+  }
+
+  return {
+    pubkeyX: pubkey[0],
+    pubkeyY: pubkey[1],
+    nkHash,
+    leafIndex,
+  };
+}
+
+/**
+ * Register a user on L1 using the relayer's registerFor() privilege
+ * @param user Address to register
+ * @param encPublicKey Grumpkin encryption public key [x, y]
+ * @param nullifierKeyHash Hash of user's nullifier key
+ * @returns Transaction hash and leaf index
+ */
+export async function registerUserOnL1(
+  user: Hex,
+  encPublicKey: [bigint, bigint],
+  nullifierKeyHash: bigint
+): Promise<{ hash: Hex; leafIndex: number }> {
+  if (!relayer) {
+    throw new Error('Relayer not configured - set RELAYER_PRIVATE_KEY');
+  }
+
+  console.log(`[L1] Registering user ${user} via relayer...`);
+
+  const hash = await relayer.writeContract({
+    address: CONTRACTS.registry as Hex,
+    abi: REGISTRY_ABI,
+    functionName: 'registerFor',
+    args: [user, encPublicKey, nullifierKeyHash],
+  });
+
+  console.log(`[L1] Registration tx submitted: ${hash}`);
+
+  // Wait for confirmation
+  const receipt = await l1Public.waitForTransactionReceipt({ hash });
+
+  if (receipt.status !== 'success') {
+    throw new Error(`Registration transaction reverted: ${hash}`);
+  }
+
+  // Parse UserRegistered event to get leaf index
+  let leafIndex = 0;
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() === (CONTRACTS.registry as string).toLowerCase()) {
+      try {
+        const decoded = decodeEventLog({
+          abi: [REGISTRY_EVENTS.UserRegistered],
+          data: log.data,
+          topics: log.topics,
+        });
+        if (decoded.eventName === 'UserRegistered') {
+          const args = decoded.args as any;
+          leafIndex = Number(args.leafIndex);
+        }
+      } catch {
+        // Not the UserRegistered event, continue
+      }
+    }
+  }
+
+  console.log(`[L1] User ${user} registered at leaf index ${leafIndex}`);
+  return { hash, leafIndex };
 }

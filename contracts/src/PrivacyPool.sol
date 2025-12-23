@@ -4,13 +4,10 @@ pragma solidity ^0.8.24;
 import {IVerifier} from "./IVerifier.sol";
 import {RecipientRegistry} from "./RecipientRegistry.sol";
 import {PoseidonT3} from "poseidon-solidity/PoseidonT3.sol";
-import {PoseidonT4} from "poseidon-solidity/PoseidonT4.sol";
-import {PoseidonT5} from "poseidon-solidity/PoseidonT5.sol";
-import {PoseidonT6} from "poseidon-solidity/PoseidonT6.sol";
 
 /// @title PrivacyPool
-/// @notice Shielded ETH pool with ECDSA-authorized transfers
-/// @dev Uses ZK proofs to verify transfers while hiding amounts and graph
+/// @notice Shielded ETH pool with ECDSA-authorized transfers and in-circuit encryption
+/// @dev Uses ZK proofs with private recipient membership proofs to prevent adapter attacks
 contract PrivacyPool {
     // ========================== CONSTANTS ==========================
 
@@ -62,7 +59,7 @@ contract PrivacyPool {
         uint256[2] commitments,
         uint256[2] leafIndices,
         uint256 intentNullifier,
-        bytes[2] encryptedNotes
+        uint256[5][2] encryptedNotes
     );
 
     event Withdrawal(
@@ -72,7 +69,7 @@ contract PrivacyPool {
         uint256 intentNullifier,
         address indexed recipient,
         uint256 amount,
-        bytes encryptedChange
+        uint256[5] encryptedChange
     );
 
     event LeafInserted(uint256 indexed leafIndex, uint256 commitment);
@@ -87,6 +84,8 @@ contract PrivacyPool {
     error InvalidNullifierKeyHash();
     error InvalidProof();
     error UnknownRoot();
+    error UnknownRegistryRoot();
+    error NonCanonicalField();
     error NullifierAlreadySpent();
     error IntentAlreadyUsed();
     error RecipientNotRegistered();
@@ -102,9 +101,9 @@ contract PrivacyPool {
         registry = RecipientRegistry(_registry);
         owner = msg.sender;
 
-        // Initialize zero values for empty Merkle tree
-        // zeros[0] = poseidon(0, 0) for empty leaf
-        zeros[0] = PoseidonT3.hash([uint256(0), uint256(0)]);
+        // CRITICAL: Empty leaf is 0, NOT hash(0,0)
+        // This must match RecipientRegistry and circuits
+        zeros[0] = 0;
         for (uint256 i = 1; i < TREE_DEPTH; i++) {
             zeros[i] = PoseidonT3.hash([zeros[i - 1], zeros[i - 1]]);
         }
@@ -137,17 +136,19 @@ contract PrivacyPool {
     /// @param randomness Random value for commitment uniqueness
     /// @param nullifierKeyHash The hash of the recipient's nullifier key (binds note to their key)
     /// @param encryptedNote ECIES-encrypted note data for recipient
-    /// @dev Commitment is computed on-chain as poseidon(msg.value, noteOwner, randomness, nullifierKeyHash)
-    ///      to prevent fake-amount attacks and bind the note to a specific nullifier key
+    /// @dev Commitment is computed on-chain using binary tree hashing:
+    ///      hash(hash(amount, owner), hash(randomness, nkHash)) - matches circuit hash_4
     function deposit(uint256 noteOwner, uint256 randomness, uint256 nullifierKeyHash, bytes calldata encryptedNote) external payable {
         if (msg.value == 0 || msg.value >= FIELD_SIZE) revert InvalidAmount();
         if (noteOwner == 0 || noteOwner >= FIELD_SIZE) revert InvalidOwner();
         if (randomness == 0 || randomness >= FIELD_SIZE) revert InvalidRandomness();
         if (nullifierKeyHash == 0 || nullifierKeyHash >= FIELD_SIZE) revert InvalidNullifierKeyHash();
 
-        // Compute 4-input commitment on-chain
-        // Includes nullifierKeyHash to bind note to recipient's nullifier key
-        uint256 commitment = PoseidonT5.hash([msg.value, noteOwner, randomness, nullifierKeyHash]);
+        // Compute 4-input commitment using binary tree structure (matches circuit hash_4)
+        // hash_4([a,b,c,d]) = hash(hash(a,b), hash(c,d))
+        uint256 h1 = PoseidonT3.hash([msg.value, noteOwner]);
+        uint256 h2 = PoseidonT3.hash([randomness, nullifierKeyHash]);
+        uint256 commitment = PoseidonT3.hash([h1, h2]);
 
         uint256 leafIndex = _insertLeaf(commitment);
 
@@ -157,53 +158,69 @@ contract PrivacyPool {
     // ========================== TRANSFER ==========================
 
     /// @notice Private transfer between registered users
-    /// @param proof ZK proof of valid transfer
-    /// @param merkleRoot Current merkle root
+    /// @dev Circuit computes ciphertext deterministically; contract verifies hash
+    /// @param proof ZK proof of valid transfer with in-circuit encryption
+    /// @param merkleRoot Current pool merkle root
+    /// @param registryRoot Registry merkle root (for private recipient membership proof)
     /// @param nullifiers Nullifiers for the 2 input notes
     /// @param outputCommitments Commitments for the 2 output notes
     /// @param intentNullifier Nullifier binding the signed intent
-    /// @param encryptedNotes ECIES-encrypted output notes
+    /// @param encryptedNotes In-circuit encrypted output notes [recipient, change]
     function transfer(
         bytes calldata proof,
         uint256 merkleRoot,
+        uint256 registryRoot,
         uint256[2] calldata nullifiers,
         uint256[2] calldata outputCommitments,
         uint256 intentNullifier,
-        bytes[2] calldata encryptedNotes
+        uint256[5][2] calldata encryptedNotes
     ) external {
-        // Verify merkle root is recent
-        if (!isKnownRoot[merkleRoot]) revert UnknownRoot();
+        // ===== CANONICAL FIELD CHECKS (ALL inputs) =====
+        if (merkleRoot >= FIELD_SIZE) revert NonCanonicalField();
+        if (registryRoot >= FIELD_SIZE) revert NonCanonicalField();
+        if (nullifiers[0] >= FIELD_SIZE) revert NonCanonicalField();
+        if (nullifiers[1] >= FIELD_SIZE) revert NonCanonicalField();
+        if (outputCommitments[0] >= FIELD_SIZE) revert NonCanonicalField();
+        if (outputCommitments[1] >= FIELD_SIZE) revert NonCanonicalField();
+        if (intentNullifier >= FIELD_SIZE) revert NonCanonicalField();
+        for (uint256 i = 0; i < 2; i++) {
+            for (uint256 j = 0; j < 5; j++) {
+                if (encryptedNotes[i][j] >= FIELD_SIZE) revert NonCanonicalField();
+            }
+        }
 
-        // Check nullifiers not spent
+        // ===== ROOT CHECKS =====
+        if (!isKnownRoot[merkleRoot]) revert UnknownRoot();
+        if (!registry.isKnownRoot(registryRoot)) revert UnknownRegistryRoot();
+
+        // ===== NULLIFIER CHECKS =====
         if (nullifierSpent[nullifiers[0]]) revert NullifierAlreadySpent();
         if (nullifierSpent[nullifiers[1]]) revert NullifierAlreadySpent();
-
-        // Belt-and-suspenders: prevent duplicate input notes (circuit enforces this too)
         if (nullifiers[0] == nullifiers[1]) revert DuplicateNullifier();
-
-        // Check intent not used
         if (intentUsed[intentNullifier]) revert IntentAlreadyUsed();
 
-        // Build public inputs for verifier
-        // Note: tx fields (to, value, nonce) are now private inputs in circuit
-        // Chain ID is verified as constant inside circuit
-        bytes32[] memory publicInputs = new bytes32[](6);
+        // ===== COMPUTE CIPHERTEXT HASH (PoseidonT3 only - binary tree) =====
+        uint256 ciphertextHash = _hashCiphertext10(encryptedNotes);
+
+        // ===== BUILD PUBLIC INPUTS =====
+        bytes32[] memory publicInputs = new bytes32[](8);
         publicInputs[0] = bytes32(merkleRoot);
         publicInputs[1] = bytes32(nullifiers[0]);
         publicInputs[2] = bytes32(nullifiers[1]);
         publicInputs[3] = bytes32(outputCommitments[0]);
         publicInputs[4] = bytes32(outputCommitments[1]);
         publicInputs[5] = bytes32(intentNullifier);
+        publicInputs[6] = bytes32(registryRoot);
+        publicInputs[7] = bytes32(ciphertextHash);
 
-        // Verify proof
+        // ===== VERIFY PROOF =====
         if (!transferVerifier.verify(proof, publicInputs)) revert InvalidProof();
 
-        // Mark nullifiers and intent as used
+        // ===== STATE UPDATES =====
         nullifierSpent[nullifiers[0]] = true;
         nullifierSpent[nullifiers[1]] = true;
         intentUsed[intentNullifier] = true;
 
-        // Insert output commitments
         uint256 leafIndex0 = _insertLeaf(outputCommitments[0]);
         uint256 leafIndex1 = _insertLeaf(outputCommitments[1]);
 
@@ -219,45 +236,57 @@ contract PrivacyPool {
     // ========================== WITHDRAWAL ==========================
 
     /// @notice Withdraw ETH from shielded balance to public address
-    /// @param proof ZK proof of valid withdrawal
-    /// @param merkleRoot Current merkle root
+    /// @dev Change note uses self-encryption (no ECDH, sender encrypts to self)
+    /// @param proof ZK proof of valid withdrawal with in-circuit encryption
+    /// @param merkleRoot Current pool merkle root
+    /// @param registryRoot Registry merkle root (for private change-to-self membership proof)
     /// @param nullifiers Nullifiers for the 2 input notes
     /// @param changeCommitment Commitment for change note (0 if no change)
     /// @param intentNullifier Nullifier binding the signed intent
     /// @param recipient Address to receive the withdrawn ETH
     /// @param amount Amount to withdraw
-    /// @param encryptedChange ECIES-encrypted change note
+    /// @param encryptedChange In-circuit encrypted change note
     function withdraw(
         bytes calldata proof,
         uint256 merkleRoot,
+        uint256 registryRoot,
         uint256[2] calldata nullifiers,
         uint256 changeCommitment,
         uint256 intentNullifier,
         address recipient,
         uint256 amount,
-        bytes calldata encryptedChange
+        uint256[5] calldata encryptedChange
     ) external {
-        // Verify merkle root is recent
-        if (!isKnownRoot[merkleRoot]) revert UnknownRoot();
+        // ===== CANONICAL FIELD CHECKS (INCLUDING AMOUNT!) =====
+        if (merkleRoot >= FIELD_SIZE) revert NonCanonicalField();
+        if (registryRoot >= FIELD_SIZE) revert NonCanonicalField();
+        if (nullifiers[0] >= FIELD_SIZE) revert NonCanonicalField();
+        if (nullifiers[1] >= FIELD_SIZE) revert NonCanonicalField();
+        if (changeCommitment >= FIELD_SIZE) revert NonCanonicalField();
+        if (intentNullifier >= FIELD_SIZE) revert NonCanonicalField();
+        if (amount >= FIELD_SIZE) revert NonCanonicalField(); // CRITICAL!
+        for (uint256 j = 0; j < 5; j++) {
+            if (encryptedChange[j] >= FIELD_SIZE) revert NonCanonicalField();
+        }
 
-        // Check nullifiers not spent
+        // ===== ROOT CHECKS =====
+        if (!isKnownRoot[merkleRoot]) revert UnknownRoot();
+        if (!registry.isKnownRoot(registryRoot)) revert UnknownRegistryRoot();
+
+        // ===== NULLIFIER CHECKS =====
         if (nullifierSpent[nullifiers[0]]) revert NullifierAlreadySpent();
         if (nullifierSpent[nullifiers[1]]) revert NullifierAlreadySpent();
-
-        // Belt-and-suspenders: prevent duplicate input notes (circuit enforces this too)
         if (nullifiers[0] == nullifiers[1]) revert DuplicateNullifier();
-
-        // Check intent not used
         if (intentUsed[intentNullifier]) revert IntentAlreadyUsed();
 
-        // Check pool has enough balance
+        // ===== BALANCE CHECK =====
         if (address(this).balance < amount) revert InsufficientPoolBalance();
 
-        // Build public inputs for verifier
-        // Order must match circuit: merkle_root, nullifier_0, nullifier_1, change_commitment,
-        // intent_nullifier, withdraw_recipient, withdraw_amount
-        // Note: chain id is verified as a constant inside the circuit.
-        bytes32[] memory publicInputs = new bytes32[](7);
+        // ===== COMPUTE CHANGE CIPHERTEXT HASH =====
+        uint256 changeCiphertextHash = _hashCiphertext5(encryptedChange);
+
+        // ===== BUILD PUBLIC INPUTS =====
+        bytes32[] memory publicInputs = new bytes32[](9);
         publicInputs[0] = bytes32(merkleRoot);
         publicInputs[1] = bytes32(nullifiers[0]);
         publicInputs[2] = bytes32(nullifiers[1]);
@@ -265,22 +294,23 @@ contract PrivacyPool {
         publicInputs[4] = bytes32(intentNullifier);
         publicInputs[5] = bytes32(uint256(uint160(recipient)));
         publicInputs[6] = bytes32(amount);
+        publicInputs[7] = bytes32(registryRoot);
+        publicInputs[8] = bytes32(changeCiphertextHash);
 
-        // Verify proof
+        // ===== VERIFY PROOF =====
         if (!withdrawVerifier.verify(proof, publicInputs)) revert InvalidProof();
 
-        // Mark nullifiers and intent as used
+        // ===== STATE UPDATES =====
         nullifierSpent[nullifiers[0]] = true;
         nullifierSpent[nullifiers[1]] = true;
         intentUsed[intentNullifier] = true;
 
-        // Insert change commitment if non-zero
         uint256 changeLeafIndex = 0;
         if (changeCommitment != 0) {
             changeLeafIndex = _insertLeaf(changeCommitment);
         }
 
-        // Send ETH to recipient
+        // ===== SEND ETH =====
         (bool success,) = recipient.call{value: amount}("");
         require(success, "ETH transfer failed");
 
@@ -327,6 +357,23 @@ contract PrivacyPool {
         nextLeafIndex = leafIndex + 1;
 
         emit LeafInserted(leafIndex, leaf);
+    }
+
+    /// @notice Hash 5-element ciphertext using binary tree (PoseidonT3 only)
+    /// @dev Binary tree: hash(hash(hash(c0,c1), hash(c2,c3)), c4)
+    function _hashCiphertext5(uint256[5] calldata c) internal pure returns (uint256) {
+        uint256 h01 = PoseidonT3.hash([c[0], c[1]]);
+        uint256 h23 = PoseidonT3.hash([c[2], c[3]]);
+        uint256 h0123 = PoseidonT3.hash([h01, h23]);
+        return PoseidonT3.hash([h0123, c[4]]);
+    }
+
+    /// @notice Hash 10-element ciphertext (two notes) using binary tree
+    /// @dev Hashes each note, then combines
+    function _hashCiphertext10(uint256[5][2] calldata notes) internal pure returns (uint256) {
+        uint256 h0 = _hashCiphertext5(notes[0]);
+        uint256 h1 = _hashCiphertext5(notes[1]);
+        return PoseidonT3.hash([h0, h1]);
     }
 
     // ========================== VIEW FUNCTIONS ==========================
