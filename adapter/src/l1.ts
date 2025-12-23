@@ -320,21 +320,21 @@ const REGISTRY_ABI = [
   },
   // View functions
   {
-    name: 'encPublicKeys',
+    name: 'getEncryptionKey',
     type: 'function',
     stateMutability: 'view',
     inputs: [{ name: 'user', type: 'address' }],
     outputs: [{ name: '', type: 'uint256[2]' }],
   },
   {
-    name: 'nullifierKeyHashes',
+    name: 'getNullifierKeyHash',
     type: 'function',
     stateMutability: 'view',
     inputs: [{ name: 'user', type: 'address' }],
     outputs: [{ name: '', type: 'uint256' }],
   },
   {
-    name: 'leafIndices',
+    name: 'getLeafIndex',
     type: 'function',
     stateMutability: 'view',
     inputs: [{ name: 'user', type: 'address' }],
@@ -402,7 +402,7 @@ export async function getEncryptionKey(user: Hex): Promise<[bigint, bigint] | nu
     const result = await l1Public.readContract({
       address: CONTRACTS.registry as Hex,
       abi: REGISTRY_ABI,
-      functionName: 'encPublicKeys',
+      functionName: 'getEncryptionKey',
       args: [user],
     }) as [bigint, bigint];
 
@@ -425,7 +425,7 @@ export async function getNullifierKeyHash(user: Hex): Promise<bigint> {
   const result = await l1Public.readContract({
     address: CONTRACTS.registry as Hex,
     abi: REGISTRY_ABI,
-    functionName: 'nullifierKeyHashes',
+    functionName: 'getNullifierKeyHash',
     args: [user],
   });
   return result as bigint;
@@ -440,7 +440,7 @@ export async function getRegistryLeafIndex(user: Hex): Promise<number> {
   const result = await l1Public.readContract({
     address: CONTRACTS.registry as Hex,
     abi: REGISTRY_ABI,
-    functionName: 'leafIndices',
+    functionName: 'getLeafIndex',
     args: [user],
   });
   return Number(result as bigint);

@@ -1656,7 +1656,6 @@ export class RpcAdapter {
       const encPubKey = await grumpkinFixedBaseMul(encPrivKey);
 
       try {
-        // Register on L1 via relayer
         const { leafIndex } = await registerUserOnL1(
           normalizedAddress as Hex,
           [encPubKey.x, encPubKey.y],
@@ -1676,8 +1675,7 @@ export class RpcAdapter {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`[RegisterViewingKey] Auto-registration failed: ${errMsg}`);
-        // Continue with local session - user can still receive from deposits with plaintext
-        // but transfers from others won't work until registered
+        throw new Error(`Registration failed. Please refresh and try again.`);
       }
     }
 
