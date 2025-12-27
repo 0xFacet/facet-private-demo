@@ -1,5 +1,60 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { encodeFunctionData, parseEther as viemParseEther, formatEther as viemFormatEther } from 'viem'
+
+// Hold-to-reveal component for sensitive data (Snapchat-style)
+function HoldToReveal({ children, className = '' }: { children: ReactNode; className?: string }) {
+  const [isRevealed, setIsRevealed] = useState(false)
+  const containerRef = useRef<HTMLSpanElement>(null)
+
+  useEffect(() => {
+    const element = containerRef.current
+    if (!element) return
+
+    const reveal = () => setIsRevealed(true)
+    const hide = () => setIsRevealed(false)
+
+    // Mouse events
+    element.addEventListener('mousedown', reveal)
+    element.addEventListener('mouseup', hide)
+    element.addEventListener('mouseleave', hide)
+
+    // Touch events
+    element.addEventListener('touchstart', reveal, { passive: true })
+    element.addEventListener('touchend', hide)
+    element.addEventListener('touchcancel', hide)
+
+    return () => {
+      element.removeEventListener('mousedown', reveal)
+      element.removeEventListener('mouseup', hide)
+      element.removeEventListener('mouseleave', hide)
+      element.removeEventListener('touchstart', reveal)
+      element.removeEventListener('touchend', hide)
+      element.removeEventListener('touchcancel', hide)
+    }
+  }, [])
+
+  return (
+    <span
+      ref={containerRef}
+      className={`relative inline-block cursor-pointer select-none transition-all duration-200 ${className}`}
+      style={{
+        filter: isRevealed ? 'none' : 'blur(8px)',
+        opacity: isRevealed ? 1 : 0.7,
+      }}
+      title="Hold to reveal"
+    >
+      {children}
+      {!isRevealed && (
+        <span className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <svg className="w-4 h-4 text-slate-400 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+          </svg>
+        </span>
+      )}
+    </span>
+  )
+}
 
 // Configuration
 const ADAPTER_URL = import.meta.env.VITE_ADAPTER_URL || 'http://localhost:8546'
@@ -633,7 +688,7 @@ function App() {
           <div className="bg-slate-800 rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between">
               <div className="text-emerald-400 font-semibold">L1 Sepolia</div>
-              <div className="text-emerald-400 font-bold">{l1Balance} ETH</div>
+              <div className="text-emerald-400 font-bold"><HoldToReveal>{l1Balance} ETH</HoldToReveal></div>
             </div>
             <p className="text-slate-500 text-xs">Deposit ETH to get a private L2 balance. Deposits are visible; spends are not.</p>
             <div className="flex gap-2">
@@ -675,7 +730,7 @@ function App() {
                   </svg>
                 </button>
               </div>
-              <div className="text-cyan-400 font-bold">{balance} ETH</div>
+              <div className="text-cyan-400 font-bold"><HoldToReveal>{balance} ETH</HoldToReveal></div>
             </div>
 
             {/* Transfer */}
@@ -756,7 +811,7 @@ function App() {
                 <div className="flex flex-wrap gap-2">
                   {unspentNotes.map((note) => (
                     <div key={note.commitment} className="bg-slate-700 rounded px-2 py-1 text-sm text-cyan-400">
-                      {formatEther(BigInt(note.amount))} ETH
+                      <HoldToReveal>{formatEther(BigInt(note.amount))} ETH</HoldToReveal>
                     </div>
                   ))}
                 </div>
@@ -790,11 +845,11 @@ function App() {
                            (tx.type === 'transfer' || tx.type === 'transfer_out') ? 'Send' : 'Withdraw'}
                         </span>
                         <span className="text-slate-300 text-sm">
-                          {formatEther(BigInt(tx.amount))} ETH
+                          <HoldToReveal>{formatEther(BigInt(tx.amount))} ETH</HoldToReveal>
                         </span>
                         {tx.recipient && (tx.type === 'transfer' || tx.type === 'transfer_out') && (
                           <span className="text-slate-500 text-xs">
-                            to {tx.recipient.slice(0, 6)}...{tx.recipient.slice(-4)}
+                            <HoldToReveal>to {tx.recipient.slice(0, 6)}...{tx.recipient.slice(-4)}</HoldToReveal>
                           </span>
                         )}
                       </div>
