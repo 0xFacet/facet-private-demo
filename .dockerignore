@@ -1,0 +1,66 @@
+# Git
+.git
+.gitignore
+
+# Environment files (passed via metadata, not baked in)
+.env*
+!.env.example
+!.env.gcloud.example
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Frontend (not needed for adapter image)
+frontend/
+
+# Contracts (not needed for adapter image)
+contracts/
+
+# Circuits - only include compiled targets (needed for proving)
+circuits/**/src/
+circuits/**/Prover.toml
+circuits/**/Nargo.toml
+circuits/common/
+circuits/curve-test/
+circuits/order-test/
+
+# Integration tests
+integration/
+
+# Scripts (not needed in image)
+script/
+
+# Documentation
+*.md
+
+# Local dev files
+node_modules/
+adapter/node_modules/
+
+# Build artifacts (will be built in container)
+adapter/dist/
+
+# TLS certificates (passed via metadata, not baked in image)
+certs/
+*.key
+*.crt
+*.pem
+
+# Heroku
+Procfile
+
+# Test/coverage
+coverage/
+*.log
+
+# Misc
+.repomixignore
+.claude/
+certs/

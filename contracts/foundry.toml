@@ -7,6 +7,7 @@ optimizer = true
 optimizer_runs = 1
 bytecode_hash = "none"
 revert_strings = "strip"
+evm_version = "osaka"
 
 remappings = [
     "forge-std/=lib/forge-std/src/",
