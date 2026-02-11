@@ -1,34 +1,24 @@
 # Facet Private Demo
 
-A standalone demo of the private payments layer for **Facet Private** — a rollup that turns MetaMask into a private bank account.
+A standalone demo of **Facet Private** — private payments on Ethereum, powered by MetaMask.
 
 **[Try the live demo →](https://facet-private-demo.vercel.app/)**
 
 ## The Vision
 
-**Facet Private** is an L2 where you use MetaMask normally, but your balances and transfers are private. No new wallet, no new keys.
-
-### Account Model
-
-| Type | Balance | Visibility |
-|------|---------|------------|
-| **EOAs** | Private only | Encrypted notes, visible only to owner |
-| **Contracts** | Public | Standard EVM, visible to everyone |
-
-EOAs hold zero public balance between transactions. When you call a contract, the system automatically unshields your funds, executes the call, and reshields any remainder — all in one transaction. The contract sees your EOA as the caller, just like normal Ethereum.
+**Facet Private** is a privacy layer for Ethereum where you use MetaMask normally, but your balances and transfers are private. No new wallet, no new keys.
 
 ### The Privacy Adapter
 
-A Privacy Adapter sits between MetaMask and the rollup:
+A Privacy Adapter sits between MetaMask and Ethereum:
 
 ```
-MetaMask → Privacy Adapter → Rollup
+MetaMask → Privacy Adapter → Ethereum (Sepolia)
 ```
 
-Three jobs:
+Two jobs:
 1. **Balances:** Decrypts your notes, reports them to MetaMask
 2. **Transfers:** You sign a normal send tx → Adapter builds ZK proof → amounts and parties stay hidden
-3. **Contract calls:** Adapter wraps call in unshield→execute→reshield (contract sees your EOA)
 
 Anyone can run their own Adapter.
 
@@ -38,15 +28,14 @@ Anyone can run their own Adapter.
 
 This demo proves the core innovation: **ECDSA signature verification inside ZK proofs**. Your MetaMask signature authorizes spends; the adapter cannot forge it.
 
-| Feature | Full L2 | This Demo |
-|---------|---------|-----------|
-| Private EOA balances | ✅ | ✅ |
-| Private transfers | ✅ | ✅ |
-| Unlinkable spends | ✅ | ✅ |
-| Contract calls (unshield→execute→reshield) | ✅ | ❌ Not demoed |
-| Rollup settlement | ✅ | ❌ Uses L1 contract |
+| Feature | Status |
+|---------|--------|
+| Private EOA balances | ✅ |
+| Private transfers | ✅ |
+| Unlinkable spends | ✅ |
+| Contract calls (unshield→execute→reshield) | ❌ Not in demo |
 
-The demo uses an L1 contract on Sepolia to simulate settlement. Think of it as a proof-of-concept for the hardest part: private transactions with a normal wallet UX.
+The demo uses a PrivacyPool contract on Sepolia. Think of it as a proof-of-concept for the hardest part: private transactions with a normal wallet UX.
 
 ## Privacy Model
 
@@ -65,35 +54,33 @@ This is a deliberate tradeoff. Full deposit privacy would require users to gener
 
 ## How It Works
 
-### Architecture (Demo)
+### Architecture
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│    MetaMask     │────▶│     Adapter     │────▶│  Sepolia L1     │
-│  (User Wallet)  │     │  (L2 Simulator) │     │  (PrivacyPool)  │
+│    MetaMask     │────▶│ Privacy Adapter  │────▶│     Sepolia     │
+│  (User Wallet)  │     │   (RPC Server)   │     │  (PrivacyPool)  │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
         │                       │                       │
-   Signs L2 txs            Generates ZK           Verifies proofs,
-   (chain 13371337)        proofs, settles        stores commitments
-                           to L1                  in merkle tree
+   Signs private txs        Generates ZK           Verifies proofs,
+   (chain 13371337)         proofs, submits        stores commitments
+                            on-chain               in merkle tree
 ```
 
-In the full L2, the adapter's role would be handled by the sequencer, and settlement would happen via rollup proofs. For this demo, we simplify by posting proofs directly to an L1 contract.
+The demo uses two signing contexts: **Sepolia** for deposits, and a **private adapter network** (chain 13371337) for transfers and withdrawals. Final settlement is always on Sepolia.
 
 1. **Deposit:** User sends ETH to the PrivacyPool contract on Sepolia. A "note" commitment is added to the merkle tree.
 
-2. **Transfer:** User signs an L2 transaction in MetaMask. The adapter generates a ZK proof that the signature authorizes the spend, and settles to L1.
+2. **Transfer:** User signs a transaction via the adapter network in MetaMask. The adapter generates a ZK proof that the signature authorizes the spend, and submits it on-chain.
 
-3. **Withdraw:** Same as transfer, but user sends to the sentinel address `0x1`. ETH exits the pool to the user's L1 wallet.
-
-The L2 chain ID is **13371337**.
+3. **Withdraw:** Same as transfer, but user sends to the sentinel address `0x1`. ETH exits the pool to the user's wallet.
 
 ### Trust Model
 
 | Component | Trusted for... | NOT trusted for... |
 |-----------|----------------|-------------------|
 | **Adapter** | Privacy (sees all your notes), Auto-registration | Spending (can't forge your signature) |
-| **L1 Contract** | Proof verification | Nothing else — trustless |
+| **PrivacyPool Contract** | Proof verification | Nothing else — trustless |
 | **MetaMask** | Key custody | N/A |
 
 The adapter is like a privacy-preserving RPC node. It can see your balance, but every spend requires your MetaMask signature verified inside the ZK circuit.
@@ -123,11 +110,11 @@ When you sign the "Register Viewing Key" message, the adapter derives your encry
 
 3. **Register Viewing Key** — Sign a message to derive your encryption keys. This is a one-time setup that registers you on-chain and lets the adapter decrypt notes sent to you. The adapter auto-registers you in the RecipientRegistry (takes a few seconds for the L1 tx to confirm).
 
-4. **Deposit** — Enter an amount and click "Deposit to L2". You'll sign a transaction on Sepolia that adds shielded ETH to your balance.
+4. **Shield** — Enter an amount and click "Shield". You'll sign a deposit transaction on Sepolia that adds shielded ETH to your private balance.
 
-5. **Transfer** — Enter a recipient address and amount, click "Send". The recipient must also be registered. You'll sign an L2 transaction; proof generation takes ~60 seconds.
+5. **Transfer** — Enter a recipient address and amount, click "Send". The recipient must also be registered. You'll sign a transaction via the adapter network; proof generation takes ~60 seconds.
 
-6. **Withdraw** — Enter an amount and click "Withdraw". Your shielded ETH returns to your L1 wallet.
+6. **Unshield** — Enter an amount and click "Unshield". Your shielded ETH returns to your public wallet.
 
 ### Tips
 
@@ -323,7 +310,7 @@ Traditional privacy systems (Tornado Cash, Railgun) require users to generate ZK
 - Requires WASM/native binaries
 - Complex key management
 
-Our approach: the adapter (or L2 sequencer in production) generates proofs server-side. Users just sign with MetaMask. The tradeoff is weaker deposit privacy, but the spend unlinkability — the core privacy property — is preserved.
+Our approach: the adapter generates proofs server-side. Users just sign with MetaMask. The tradeoff is weaker deposit privacy, but the spend unlinkability — the core privacy property — is preserved.
 
 ---
 
@@ -349,13 +336,13 @@ facet-private-demo/
 ## FAQ
 
 **Q: Is this a production system?**
-A: No. This is a demo that proves the core innovation works. The full Facet Private L2 is a larger effort that builds on these primitives.
+A: No. This is a demo that proves the core innovation works.
 
 **Q: Can the adapter steal my funds?**
 A: No. Every spend requires your ECDSA signature, verified inside the ZK circuit. The adapter can see your balance but cannot forge signatures. Even though the adapter auto-registers you, this only sets up your encryption key — it doesn't give anyone spending authority over your funds.
 
 **Q: What if the adapter goes down?**
-A: Your funds are safe in the L1 contract. You'd need to run your own adapter (or wait for it to come back) to generate proofs for transfers/withdrawals.
+A: Your funds are safe in the on-chain contract. You'd need to run your own adapter (or wait for it to come back) to generate proofs for transfers/withdrawals.
 
 **Q: Why are deposits public?**
 A: To avoid requiring users to generate proofs. Full deposit privacy would need a deposit circuit, adding UX complexity. This is a deliberate tradeoff for better UX.
@@ -365,9 +352,6 @@ A: Yes! The adapter is open source. Point it at your own Sepolia RPC and you're 
 
 **Q: How is this different from Tornado Cash?**
 A: Tornado uses fixed denominations and requires client-side proofs. We support variable amounts with server-side proofs and a MetaMask-native UX.
-
-**Q: How does this relate to the full Facet Private L2?**
-A: This demo proves the core private payments mechanism. The full L2 adds contract calls with automatic unshield→execute→reshield, rollup settlement, and the full account model where EOAs have only private balances.
 
 ---
 

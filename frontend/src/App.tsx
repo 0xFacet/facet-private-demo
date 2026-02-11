@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { encodeFunctionData, parseEther as viemParseEther, formatEther as viemFormatEther } from 'viem'
+import { useTheme, type Theme } from './themes'
 
 // Configuration
 const ADAPTER_URL = import.meta.env.VITE_ADAPTER_URL || 'http://localhost:8546'
@@ -105,7 +106,7 @@ async function switchToNetwork(chainId: string, addIfMissing = false) {
         method: 'wallet_addEthereumChain',
         params: [{
           chainId: VIRTUAL_CHAIN_ID,
-          chainName: 'Facet Private (L2)',
+          chainName: 'Facet Private',
           rpcUrls: [ADAPTER_URL],
           nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
         }],
@@ -117,19 +118,11 @@ async function switchToNetwork(chainId: string, addIfMissing = false) {
 }
 
 // Status display component
-function StatusDisplay({ status, elapsedTime }: { status: Status | null; elapsedTime: number }) {
+function StatusDisplay({ status, elapsedTime, theme: t }: { status: Status | null; elapsedTime: number; theme: Theme }) {
   if (!status) return null
 
   return (
-    <div
-      className={`rounded-lg p-3 text-sm flex items-center gap-3 ${
-        status.type === 'success'
-          ? 'bg-cyan-500/20 text-cyan-400'
-          : status.type === 'error'
-          ? 'bg-red-500/20 text-red-400'
-          : 'bg-orange-500/20 text-orange-400'
-      }`}
-    >
+    <div className={`p-3 text-sm flex items-center gap-3 rounded ${t.status[status.type]}`}>
       {status.type === 'pending' && (
         <svg className="animate-spin h-4 w-4 flex-shrink-0" viewBox="0 0 24 24">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
@@ -137,7 +130,7 @@ function StatusDisplay({ status, elapsedTime }: { status: Status | null; elapsed
         </svg>
       )}
       <div className="flex-1">
-        <div>{status.message}</div>
+        <div className={t.statusText}>{status.message}</div>
         {status.type === 'pending' && status.message.includes('proof') && (
           <div className="text-xs opacity-75 mt-1">
             {elapsedTime}s elapsed - proof generation takes ~60s on this demo server
@@ -407,7 +400,7 @@ function App() {
     }
   }
 
-  // Transfer (on L2)
+  // Transfer (via adapter)
   const transfer = async () => {
     try {
       if (!transferTo || !transferTo.startsWith('0x')) {
@@ -427,7 +420,7 @@ function App() {
       }
 
       // Ensure we're on virtual chain
-      showStatus('Switching to L2...', 'pending', 'transfer')
+      showStatus('Preparing transaction...', 'pending', 'transfer')
       await switchToNetwork(VIRTUAL_CHAIN_ID, true)
 
       const weiAmount = '0x' + parseEther(transferAmount).toString(16)
@@ -469,7 +462,7 @@ function App() {
         if (txStatus.status === 'proving') {
           showStatus('Generating zero-knowledge proof...', 'pending', 'transfer')
         } else if (txStatus.status === 'submitting') {
-          showStatus('Submitting proof to L1...', 'pending', 'transfer')
+          showStatus('Submitting proof on-chain...', 'pending', 'transfer')
         }
       }
 
@@ -489,7 +482,7 @@ function App() {
     }
   }
 
-  // Withdraw (on L2)
+  // Withdraw (via adapter)
   const withdraw = async () => {
     try {
       if (!withdrawAmount || parseFloat(withdrawAmount) <= 0) {
@@ -499,7 +492,7 @@ function App() {
       setLoading('withdraw')
 
       // Ensure we're on virtual chain
-      showStatus('Switching to L2...', 'pending', 'withdraw')
+      showStatus('Preparing transaction...', 'pending', 'withdraw')
       await switchToNetwork(VIRTUAL_CHAIN_ID, true)
 
       const weiAmount = '0x' + parseEther(withdrawAmount).toString(16)
@@ -541,7 +534,7 @@ function App() {
         if (txStatus.status === 'proving') {
           showStatus('Generating zero-knowledge proof...', 'pending', 'withdraw')
         } else if (txStatus.status === 'submitting') {
-          showStatus('Submitting proof to L1...', 'pending', 'withdraw')
+          showStatus('Submitting proof on-chain...', 'pending', 'withdraw')
         }
       }
 
@@ -561,268 +554,283 @@ function App() {
   }
 
   const unspentNotes = notes.filter(n => !n.spent)
+  const { theme: t, themeId, setThemeId, themes: allThemes } = useTheme()
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 p-6">
-      <div className="max-w-md mx-auto space-y-4">
-        {/* Header */}
-        <div className="text-center mb-6">
-          <h1 className="text-3xl font-bold text-cyan-400">Facet Private</h1>
-          <p className="text-slate-400 mt-1">A rollup that turns MetaMask into a private bank account</p>
-          {account && (
-            <p className="text-slate-500 text-xs font-mono mt-2 break-all">{account}</p>
-          )}
-        </div>
-
-        {/* Connect / Register */}
-        {(!account || !registered) && (
-          <div className="bg-slate-800 rounded-xl p-4 space-y-3">
-            {!account ? (
-              <>
-                <button
-                  onClick={connect}
-                  disabled={!!loading}
-                  className="w-full bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 font-semibold py-3 px-6 rounded-lg transition"
-                >
-                  Connect Wallet
-                </button>
-                <div className="text-left text-sm text-slate-400 space-y-2 pt-2">
-                  <p><strong className="text-slate-300">Your keys, your funds.</strong> Your MetaMask private key is your spending key. The adapter generates ZK proofs but cannot spend without your signature.</p>
-                  <p><strong className="text-slate-300">Deposits are public.</strong> When you deposit, observers see the amount. This is a tradeoff for simpler UX (no client-side proofs).</p>
-                  <p><strong className="text-slate-300">Spends are unlinkable.</strong> Transfers and withdrawals cannot be linked back to your deposits. That's the core privacy property.</p>
-                  <p><strong className="text-slate-300">This is a demo.</strong> It proves the core tech works. The full L2 will add private contract calls and rollup settlement.</p>
-                </div>
-              </>
-            ) : (
-              <>
-                <p className="text-slate-400 text-sm">
-                  Sign a message to create a viewing key and register it with the privacy adapter. The adapter can see your private transactions but it cannot spend your funds. This requires some trust, but you can always run your own adapter instance instead.
-                </p>
-                <button
-                  onClick={register}
-                  disabled={!!loading}
-                  className="w-full bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 font-semibold py-3 px-6 rounded-lg transition"
-                >
-                  {loading === 'register' ? 'Signing...' : 'Login to Private Wallet'}
-                </button>
-              </>
-            )}
-            {/* Global status for connect/register */}
-            {status && !status.section && <StatusDisplay status={status} elapsedTime={elapsedTime} />}
-          </div>
-        )}
-
-        {/* Session Lost Banner */}
-        {registered && sessionLost && (
-          <div className="bg-red-500/20 border border-red-500/50 rounded-xl p-4 text-red-400">
-            <div className="font-semibold mb-1">Session Expired</div>
-            <p className="text-sm mb-3">
-              The server was restarted and your session was lost. Please refresh the page to re-login.
-            </p>
-            <button
-              onClick={() => window.location.reload()}
-              className="bg-red-500 hover:bg-red-400 text-white font-semibold py-2 px-4 rounded-lg transition"
-            >
-              Refresh Page
-            </button>
-          </div>
-        )}
-
-        {/* L1 Section */}
-        {registered && !sessionLost && (
-          <div className="bg-slate-800 rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="text-emerald-400 font-semibold">L1 Sepolia</div>
-              <div className="text-emerald-400 font-bold">{l1Balance} ETH</div>
-            </div>
-            <p className="text-slate-500 text-xs">Deposit ETH to get a private L2 balance. Deposits are visible; spends are not.</p>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder="Amount"
-                value={depositAmount}
-                onChange={(e) => setDepositAmount(e.target.value)}
-                disabled={!!loading}
-                className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-emerald-500 disabled:opacity-50"
-              />
-              <button
-                onClick={deposit}
-                disabled={!!loading}
-                className="bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 disabled:text-slate-400 font-semibold py-2 px-4 rounded-lg transition whitespace-nowrap"
-              >
-                {loading === 'deposit' ? '...' : 'Deposit to L2'}
-              </button>
-            </div>
-            {/* Deposit status */}
-            {status?.section === 'deposit' && <StatusDisplay status={status} elapsedTime={elapsedTime} />}
-          </div>
-        )}
-
-        {/* L2 Section */}
-        {registered && !sessionLost && (
-          <div className="bg-slate-800 rounded-xl p-4 space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="text-cyan-400 font-semibold">L2 Private Balance</div>
-                <button
-                  onClick={refreshAll}
-                  disabled={!!loading}
-                  className="p-1 text-slate-500 hover:text-cyan-400 disabled:opacity-50 transition"
-                  title="Refresh"
-                >
-                  <svg className={`w-4 h-4 ${loading === 'refresh' ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                </button>
-              </div>
-              <div className="text-cyan-400 font-bold">{balance} ETH</div>
-            </div>
-
-            {/* Transfer */}
-            <div className="space-y-2">
-              <div className="text-slate-400 text-sm">Private Transfer</div>
-              <p className="text-slate-500 text-xs">
-                Recipients must have registered with Facet Private.{' '}
-                <button
-                  onClick={() => setTransferTo('0xc2172a6315c1d7f6855768f843c420ebb36eda97')}
-                  className="text-cyan-500 hover:text-cyan-400 underline"
-                >
-                  Use sample address
-                </button>
-              </p>
-              <input
-                type="text"
-                placeholder="Recipient (0x...)"
-                value={transferTo}
-                onChange={(e) => setTransferTo(e.target.value)}
-                disabled={!!loading}
-                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
-              />
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Amount"
-                  value={transferAmount}
-                  onChange={(e) => setTransferAmount(e.target.value)}
-                  disabled={!!loading}
-                  className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
-                />
-                <button
-                  onClick={transfer}
-                  disabled={!!loading}
-                  className="bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 disabled:text-slate-400 font-semibold py-2 px-4 rounded-lg transition whitespace-nowrap"
-                >
-                  {loading === 'transfer' ? '...' : 'Send'}
-                </button>
-              </div>
-              {/* Transfer status */}
-              {status?.section === 'transfer' && <StatusDisplay status={status} elapsedTime={elapsedTime} />}
-            </div>
-
-            {/* Withdraw */}
-            <div className="space-y-2 pt-2 border-t border-slate-700">
-              <div className="flex items-center gap-2">
-                <span className="text-slate-400 text-sm">Withdraw to L1</span>
-                <span className="text-slate-600 text-xs">— exit to your public wallet</span>
-              </div>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Amount"
-                  value={withdrawAmount}
-                  onChange={(e) => setWithdrawAmount(e.target.value)}
-                  disabled={!!loading}
-                  className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-slate-100 placeholder-slate-400 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
-                />
-                <button
-                  onClick={withdraw}
-                  disabled={!!loading}
-                  className="bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 disabled:text-slate-400 font-semibold py-2 px-4 rounded-lg transition whitespace-nowrap"
-                >
-                  {loading === 'withdraw' ? '...' : 'Withdraw'}
-                </button>
-              </div>
-              {/* Withdraw status */}
-              {status?.section === 'withdraw' && <StatusDisplay status={status} elapsedTime={elapsedTime} />}
-            </div>
-
-            {/* Notes */}
-            {unspentNotes.length > 0 && (
-              <div className="pt-2 border-t border-slate-700">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-slate-400 text-sm">Notes ({unspentNotes.length})</span>
-                  <span className="text-slate-600 text-xs">— encrypted UTXOs only you can spend</span>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {unspentNotes.map((note) => (
-                    <div key={note.commitment} className="bg-slate-700 rounded px-2 py-1 text-sm text-cyan-400">
-                      {formatEther(BigInt(note.amount))} ETH
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Transaction History */}
-            {transactions.length > 0 && (
-              <div className="pt-2 border-t border-slate-700">
-                <div className="text-slate-400 text-sm mb-2">History</div>
-                <div className="space-y-2">
-                  {transactions.slice().reverse().map((tx) => (
-                    <a
-                      key={tx.l1Hash}
-                      href={`${ETHERSCAN_URL}${tx.l1Hash}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center justify-between p-2 bg-slate-700 rounded hover:bg-slate-600 transition"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${
-                          tx.type === 'deposit' ? 'bg-emerald-500/20 text-emerald-400' :
-                          tx.type === 'transfer_in' ? 'bg-purple-500/20 text-purple-400' :
-                          tx.type === 'transfer_self' ? 'bg-slate-500/20 text-slate-400' :
-                          (tx.type === 'transfer' || tx.type === 'transfer_out') ? 'bg-cyan-500/20 text-cyan-400' :
-                          'bg-orange-500/20 text-orange-400'
-                        }`}>
-                          {tx.type === 'deposit' ? 'Deposit' :
-                           tx.type === 'transfer_in' ? 'Receive' :
-                           tx.type === 'transfer_self' ? 'Self' :
-                           (tx.type === 'transfer' || tx.type === 'transfer_out') ? 'Send' : 'Withdraw'}
-                        </span>
-                        <span className="text-slate-300 text-sm">
-                          {formatEther(BigInt(tx.amount))} ETH
-                        </span>
-                        {tx.recipient && (tx.type === 'transfer' || tx.type === 'transfer_out') && (
-                          <span className="text-slate-500 text-xs">
-                            to {tx.recipient.slice(0, 6)}...{tx.recipient.slice(-4)}
-                          </span>
-                        )}
-                      </div>
-                      <svg className="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                      </svg>
-                    </a>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+    <div className={t.page}>
+      {/* Theme Picker */}
+      <div className="theme-picker">
+        <select value={themeId} onChange={(e) => setThemeId(e.target.value)}>
+          {allThemes.map(theme => (
+            <option key={theme.id} value={theme.id}>{theme.name}</option>
+          ))}
+        </select>
       </div>
 
-      {/* Footer */}
-      <div className="mt-8 pt-4 border-t border-slate-700/50 text-center">
-        <a
-          href="https://github.com/0xFacet/facet-private-demo"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-slate-500 hover:text-slate-300 text-sm transition-colors inline-flex items-center gap-1.5"
-        >
-          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-            <path fillRule="evenodd" clipRule="evenodd" d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.17 6.839 9.49.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.464-1.11-1.464-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.167 22 16.418 22 12c0-5.523-4.477-10-10-10z" />
-          </svg>
-          View on GitHub
-        </a>
+      <div className={t.container}>
+        {/* Header */}
+        <header className={t.header}>
+          <div className="flex justify-between items-center">
+            <div className="flex items-center">
+              <div className={t.logoMark}>FP</div>
+              <div className={t.logoText}>FACET<br />PRIVATE</div>
+            </div>
+            {account && <div className={t.headerAddress}>{account}</div>}
+          </div>
+        </header>
+
+        {/* Main Content */}
+        <main className={t.main}>
+          {/* Tagline */}
+          <p className={t.tagline}>Private payments on Ethereum, powered by MetaMask</p>
+
+          {/* Connect / Register */}
+          {(!account || !registered) && (
+            <div className={`${t.card} p-4 space-y-3`}>
+              {!account ? (
+                <>
+                  <button
+                    onClick={connect}
+                    disabled={!!loading}
+                    className={`${t.btnAccent} w-full py-3 px-6`}
+                  >
+                    Connect Wallet
+                  </button>
+                  <div className={`text-left space-y-2 pt-2 ${t.infoText}`}>
+                    <p><strong className={t.infoStrong}>Your keys, your funds.</strong> Your MetaMask private key is your spending key. The adapter generates ZK proofs but cannot spend without your signature.</p>
+                    <p><strong className={t.infoStrong}>Deposits are public.</strong> When you deposit, observers see the amount. This is a tradeoff for simpler UX (no client-side proofs).</p>
+                    <p><strong className={t.infoStrong}>Spends are unlinkable.</strong> Transfers and withdrawals cannot be linked back to your deposits. That's the core privacy property.</p>
+                    <p><strong className={t.infoStrong}>This is a demo.</strong> It proves the core tech works on Sepolia.</p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className={t.infoText}>
+                    Sign a message to create a viewing key and register it with the privacy adapter. The adapter can see your private transactions but it cannot spend your funds. This requires some trust, but you can always run your own adapter instance instead.
+                  </p>
+                  <button
+                    onClick={register}
+                    disabled={!!loading}
+                    className={`${t.btnAccent} w-full py-3 px-6`}
+                  >
+                    {loading === 'register' ? 'Signing...' : 'Login to Private Wallet'}
+                  </button>
+                </>
+              )}
+              {status && !status.section && <StatusDisplay status={status} elapsedTime={elapsedTime} theme={t} />}
+            </div>
+          )}
+
+          {/* Session Lost Banner */}
+          {registered && sessionLost && (
+            <div className={t.sessionBanner}>
+              <div className={t.sessionTitle}>Session Expired</div>
+              <p className={t.sessionText}>
+                The server was restarted and your session was lost. Please refresh the page to re-login.
+              </p>
+              <button onClick={() => window.location.reload()} className={t.btnDanger}>
+                Refresh Page
+              </button>
+            </div>
+          )}
+
+          {/* Public Balance / Deposit Section */}
+          {registered && !sessionLost && (
+            <div className={t.card}>
+              <div className={t.cardHeader}>
+                <div className={`${t.balanceLabel} mb-1`}>PUBLIC BALANCE</div>
+                <div className={t.balanceAmount}>{l1Balance} <span className={t.balanceUnit}>ETH</span></div>
+              </div>
+              <div className={`${t.cardSection} space-y-3`}>
+                <p className={t.helpText}>Deposit ETH to shield it. Deposits are visible; spends are not.</p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Amount"
+                    value={depositAmount}
+                    onChange={(e) => setDepositAmount(e.target.value)}
+                    disabled={!!loading}
+                    className={`${t.input} flex-1`}
+                  />
+                  <button
+                    onClick={deposit}
+                    disabled={!!loading}
+                    className={t.btnPrimary}
+                  >
+                    {loading === 'deposit' ? '...' : 'Shield'}
+                  </button>
+                </div>
+                {status?.section === 'deposit' && <StatusDisplay status={status} elapsedTime={elapsedTime} theme={t} />}
+              </div>
+            </div>
+          )}
+
+          {/* Private Balance Section */}
+          {registered && !sessionLost && (
+            <div className={t.card}>
+              <div className={`${t.cardHeader} flex items-center justify-between`}>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <div className={t.balanceLabel}>PRIVATE BALANCE</div>
+                    <button
+                      onClick={refreshAll}
+                      disabled={!!loading}
+                      className={t.btnIcon}
+                      title="Refresh"
+                    >
+                      <svg className={`w-3 h-3 ${loading === 'refresh' ? 'animate-spin' : ''}`} fill="none" stroke={t.refreshStroke} viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div className={t.balanceAmount}>{balance} <span className={t.balanceUnit}>ETH</span></div>
+              </div>
+
+              {/* Transfer */}
+              <div className={`${t.cardSection} space-y-3`}>
+                <div className={t.sectionTitle}>PRIVATE TRANSFER</div>
+                <p className={t.helpText}>
+                  Recipients must have registered with Facet Private.{' '}
+                  <button
+                    onClick={() => setTransferTo('0xc2172a6315c1d7f6855768f843c420ebb36eda97')}
+                    className={t.link}
+                  >
+                    Use sample address
+                  </button>
+                </p>
+                <input
+                  type="text"
+                  placeholder="Recipient (0x...)"
+                  value={transferTo}
+                  onChange={(e) => setTransferTo(e.target.value)}
+                  disabled={!!loading}
+                  className={`${t.input} w-full`}
+                />
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Amount"
+                    value={transferAmount}
+                    onChange={(e) => setTransferAmount(e.target.value)}
+                    disabled={!!loading}
+                    className={`${t.input} flex-1`}
+                  />
+                  <button
+                    onClick={transfer}
+                    disabled={!!loading}
+                    className={t.btnAccent}
+                  >
+                    {loading === 'transfer' ? '...' : 'Send'}
+                  </button>
+                </div>
+                {status?.section === 'transfer' && <StatusDisplay status={status} elapsedTime={elapsedTime} theme={t} />}
+              </div>
+
+              {/* Withdraw */}
+              <div className={`${t.cardSection} space-y-3`}>
+                <div className="flex items-center gap-2">
+                  <span className={t.sectionTitle}>UNSHIELD</span>
+                  <span className={t.helpText}>— return ETH to your public wallet</span>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Amount"
+                    value={withdrawAmount}
+                    onChange={(e) => setWithdrawAmount(e.target.value)}
+                    disabled={!!loading}
+                    className={`${t.input} flex-1`}
+                  />
+                  <button
+                    onClick={withdraw}
+                    disabled={!!loading}
+                    className={t.btnAccent}
+                  >
+                    {loading === 'withdraw' ? '...' : 'Withdraw'}
+                  </button>
+                </div>
+                {status?.section === 'withdraw' && <StatusDisplay status={status} elapsedTime={elapsedTime} theme={t} />}
+              </div>
+
+              {/* Notes */}
+              {unspentNotes.length > 0 && (
+                <div className={t.cardSection}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className={`${t.sectionTitle} text-sm`}>NOTES ({unspentNotes.length})</span>
+                    <span className={t.helpText}>— encrypted UTXOs only you can spend</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {unspentNotes.map((note) => (
+                      <div key={note.commitment} className={t.notePill}>
+                        {formatEther(BigInt(note.amount))} ETH
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Transaction History */}
+              {transactions.length > 0 && (
+                <div className={t.cardSection}>
+                  <div className={`${t.sectionTitle} text-sm mb-2`}>HISTORY</div>
+                  <div className="space-y-2">
+                    {transactions.slice().reverse().map((tx) => (
+                      <a
+                        key={tx.l1Hash}
+                        href={`${ETHERSCAN_URL}${tx.l1Hash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={t.txRow}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${
+                            tx.type === 'deposit' ? t.txBadge.deposit :
+                            tx.type === 'transfer_in' ? t.txBadge.receive :
+                            tx.type === 'transfer_self' ? t.txBadge.self :
+                            (tx.type === 'transfer' || tx.type === 'transfer_out') ? t.txBadge.send :
+                            t.txBadge.withdraw
+                          }`}>
+                            {tx.type === 'deposit' ? 'Deposit' :
+                             tx.type === 'transfer_in' ? 'Receive' :
+                             tx.type === 'transfer_self' ? 'Self' :
+                             (tx.type === 'transfer' || tx.type === 'transfer_out') ? 'Send' : 'Withdraw'}
+                          </span>
+                          <span className={t.txAmount}>
+                            {formatEther(BigInt(tx.amount))} ETH
+                          </span>
+                          {tx.recipient && (tx.type === 'transfer' || tx.type === 'transfer_out') && (
+                            <span className={t.txMeta}>
+                              to {tx.recipient.slice(0, 6)}...{tx.recipient.slice(-4)}
+                            </span>
+                          )}
+                        </div>
+                        <svg className={t.txIcon} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </main>
+
+        {/* Footer */}
+        <div className={t.footer}>
+          <a
+            href="https://github.com/0xFacet/facet-private-demo"
+            target="_blank"
+            rel="noopener noreferrer"
+            className={t.footerLink}
+          >
+            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+              <path fillRule="evenodd" clipRule="evenodd" d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.17 6.839 9.49.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.604-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.464-1.11-1.464-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.167 22 16.418 22 12c0-5.523-4.477-10-10-10z" />
+            </svg>
+            View on GitHub
+          </a>
+        </div>
       </div>
     </div>
   )
