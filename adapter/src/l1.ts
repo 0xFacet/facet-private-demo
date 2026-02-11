@@ -189,15 +189,22 @@ export async function submitTransfer(
 
   const proofHex = ('0x' + Buffer.from(proof).toString('hex')) as Hex;
 
-  const hash = await relayer.writeContract({
-    address: CONTRACTS.privacyPool as Hex,
-    abi: PRIVACY_POOL_ABI,
-    functionName: 'transfer',
-    args: [proofHex, merkleRoot, registryRoot, nullifiers, outputCommitments, intentNullifier, encryptedNotes],
-  });
+  console.log(`[L1] Submitting transfer to ${CONTRACTS.privacyPool} via relayer ${relayer.account.address}...`);
 
-  console.log(`[L1] Transfer submitted: ${hash}`);
-  return hash;
+  try {
+    const hash = await relayer.writeContract({
+      address: CONTRACTS.privacyPool as Hex,
+      abi: PRIVACY_POOL_ABI,
+      functionName: 'transfer',
+      args: [proofHex, merkleRoot, registryRoot, nullifiers, outputCommitments, intentNullifier, encryptedNotes],
+    });
+
+    console.log(`[L1] Transfer submitted: ${hash}`);
+    return hash;
+  } catch (err) {
+    console.error(`[L1] Transfer submission failed:`, err);
+    throw err;
+  }
 }
 
 /**
@@ -220,22 +227,32 @@ export async function submitWithdraw(
 
   const proofHex = ('0x' + Buffer.from(proof).toString('hex')) as Hex;
 
-  const hash = await relayer.writeContract({
-    address: CONTRACTS.privacyPool as Hex,
-    abi: PRIVACY_POOL_ABI,
-    functionName: 'withdraw',
-    args: [proofHex, merkleRoot, registryRoot, nullifiers, changeCommitment, intentNullifier, recipient, amount, encryptedChange],
-  });
+  console.log(`[L1] Submitting withdraw to ${CONTRACTS.privacyPool} via relayer ${relayer.account.address}...`);
 
-  console.log(`[L1] Withdraw submitted: ${hash}`);
-  return hash;
+  try {
+    const hash = await relayer.writeContract({
+      address: CONTRACTS.privacyPool as Hex,
+      abi: PRIVACY_POOL_ABI,
+      functionName: 'withdraw',
+      args: [proofHex, merkleRoot, registryRoot, nullifiers, changeCommitment, intentNullifier, recipient, amount, encryptedChange],
+    });
+
+    console.log(`[L1] Withdraw submitted: ${hash}`);
+    return hash;
+  } catch (err) {
+    console.error(`[L1] Withdraw submission failed:`, err);
+    throw err;
+  }
 }
 
 /**
  * Wait for a transaction receipt
  */
 export async function waitForReceipt(hash: Hex): Promise<TransactionReceipt> {
-  return await l1Public.waitForTransactionReceipt({ hash });
+  console.log(`[L1] Waiting for receipt: ${hash}...`);
+  const receipt = await l1Public.waitForTransactionReceipt({ hash });
+  console.log(`[L1] Receipt received: status=${receipt.status}, blockNumber=${receipt.blockNumber}, gasUsed=${receipt.gasUsed}`);
+  return receipt;
 }
 
 /**
