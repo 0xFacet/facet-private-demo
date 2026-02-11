@@ -105,7 +105,7 @@ async function switchToNetwork(chainId: string, addIfMissing = false) {
         method: 'wallet_addEthereumChain',
         params: [{
           chainId: VIRTUAL_CHAIN_ID,
-          chainName: 'Facet Private (L2)',
+          chainName: 'Facet Private',
           rpcUrls: [ADAPTER_URL],
           nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
         }],
@@ -407,7 +407,7 @@ function App() {
     }
   }
 
-  // Transfer (on L2)
+  // Transfer (via adapter)
   const transfer = async () => {
     try {
       if (!transferTo || !transferTo.startsWith('0x')) {
@@ -427,7 +427,7 @@ function App() {
       }
 
       // Ensure we're on virtual chain
-      showStatus('Switching to L2...', 'pending', 'transfer')
+      showStatus('Preparing transaction...', 'pending', 'transfer')
       await switchToNetwork(VIRTUAL_CHAIN_ID, true)
 
       const weiAmount = '0x' + parseEther(transferAmount).toString(16)
@@ -469,7 +469,7 @@ function App() {
         if (txStatus.status === 'proving') {
           showStatus('Generating zero-knowledge proof...', 'pending', 'transfer')
         } else if (txStatus.status === 'submitting') {
-          showStatus('Submitting proof to L1...', 'pending', 'transfer')
+          showStatus('Submitting proof on-chain...', 'pending', 'transfer')
         }
       }
 
@@ -489,7 +489,7 @@ function App() {
     }
   }
 
-  // Withdraw (on L2)
+  // Withdraw (via adapter)
   const withdraw = async () => {
     try {
       if (!withdrawAmount || parseFloat(withdrawAmount) <= 0) {
@@ -499,7 +499,7 @@ function App() {
       setLoading('withdraw')
 
       // Ensure we're on virtual chain
-      showStatus('Switching to L2...', 'pending', 'withdraw')
+      showStatus('Preparing transaction...', 'pending', 'withdraw')
       await switchToNetwork(VIRTUAL_CHAIN_ID, true)
 
       const weiAmount = '0x' + parseEther(withdrawAmount).toString(16)
@@ -541,7 +541,7 @@ function App() {
         if (txStatus.status === 'proving') {
           showStatus('Generating zero-knowledge proof...', 'pending', 'withdraw')
         } else if (txStatus.status === 'submitting') {
-          showStatus('Submitting proof to L1...', 'pending', 'withdraw')
+          showStatus('Submitting proof on-chain...', 'pending', 'withdraw')
         }
       }
 
@@ -568,7 +568,7 @@ function App() {
         {/* Header */}
         <div className="text-center mb-6">
           <h1 className="text-3xl font-bold text-cyan-400">Facet Private</h1>
-          <p className="text-slate-400 mt-1">A rollup that turns MetaMask into a private bank account</p>
+          <p className="text-slate-400 mt-1">Private payments on Ethereum, powered by MetaMask</p>
           {account && (
             <p className="text-slate-500 text-xs font-mono mt-2 break-all">{account}</p>
           )}
@@ -590,7 +590,7 @@ function App() {
                   <p><strong className="text-slate-300">Your keys, your funds.</strong> Your MetaMask private key is your spending key. The adapter generates ZK proofs but cannot spend without your signature.</p>
                   <p><strong className="text-slate-300">Deposits are public.</strong> When you deposit, observers see the amount. This is a tradeoff for simpler UX (no client-side proofs).</p>
                   <p><strong className="text-slate-300">Spends are unlinkable.</strong> Transfers and withdrawals cannot be linked back to your deposits. That's the core privacy property.</p>
-                  <p><strong className="text-slate-300">This is a demo.</strong> It proves the core tech works. The full L2 will add private contract calls and rollup settlement.</p>
+                  <p><strong className="text-slate-300">This is a demo.</strong> It proves the core tech works on Sepolia.</p>
                 </div>
               </>
             ) : (
@@ -628,14 +628,14 @@ function App() {
           </div>
         )}
 
-        {/* L1 Section */}
+        {/* Public Balance / Deposit Section */}
         {registered && !sessionLost && (
           <div className="bg-slate-800 rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between">
-              <div className="text-emerald-400 font-semibold">L1 Sepolia</div>
+              <div className="text-emerald-400 font-semibold">Public Balance</div>
               <div className="text-emerald-400 font-bold">{l1Balance} ETH</div>
             </div>
-            <p className="text-slate-500 text-xs">Deposit ETH to get a private L2 balance. Deposits are visible; spends are not.</p>
+            <p className="text-slate-500 text-xs">Deposit ETH to shield it. Deposits are visible; spends are not.</p>
             <div className="flex gap-2">
               <input
                 type="text"
@@ -650,7 +650,7 @@ function App() {
                 disabled={!!loading}
                 className="bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-600 disabled:cursor-not-allowed text-slate-900 disabled:text-slate-400 font-semibold py-2 px-4 rounded-lg transition whitespace-nowrap"
               >
-                {loading === 'deposit' ? '...' : 'Deposit to L2'}
+                {loading === 'deposit' ? '...' : 'Shield'}
               </button>
             </div>
             {/* Deposit status */}
@@ -658,12 +658,12 @@ function App() {
           </div>
         )}
 
-        {/* L2 Section */}
+        {/* Private Balance Section */}
         {registered && !sessionLost && (
           <div className="bg-slate-800 rounded-xl p-4 space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <div className="text-cyan-400 font-semibold">L2 Private Balance</div>
+                <div className="text-cyan-400 font-semibold">Private Balance</div>
                 <button
                   onClick={refreshAll}
                   disabled={!!loading}
@@ -722,8 +722,8 @@ function App() {
             {/* Withdraw */}
             <div className="space-y-2 pt-2 border-t border-slate-700">
               <div className="flex items-center gap-2">
-                <span className="text-slate-400 text-sm">Withdraw to L1</span>
-                <span className="text-slate-600 text-xs">— exit to your public wallet</span>
+                <span className="text-slate-400 text-sm">Unshield</span>
+                <span className="text-slate-600 text-xs">— return ETH to your public wallet</span>
               </div>
               <div className="flex gap-2">
                 <input
