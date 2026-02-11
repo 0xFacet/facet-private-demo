@@ -103,35 +103,4 @@ publicInputs[7] = bytes32(uint256(0x2c20723fa1519f29597f65660496e1a5bcd480e08551
 
         console.log("Nullifier SSTORE (cold):", gasUsed);
     }
-
-    /// @notice Summary of measured transfer costs
-    function test_TransferGasSummary() public pure {
-        // Actual measured values from tests above
-        console.log("=== Transfer Gas Breakdown (measured) ===");
-        console.log("");
-        console.log("EXECUTION:");
-        console.log("  ZK Verifier:          2,653,918");
-        console.log("  2x Merkle insert:     1,208,224 (2 x 604,112)");
-        console.log("  Ciphertext hash:        272,905");
-        console.log("  3x SSTORE (cold):        66,345 (3 x 22,115)");
-        console.log("  Other (checks):          50,000");
-        console.log("  Subtotal:            ~4,251,392");
-        console.log("");
-        console.log("CALLDATA (16 gas/byte non-zero):");
-        console.log("  Proof (~10KB):         ~163,000");
-        console.log("  Encrypted notes (320B): ~5,000");
-        console.log("  Other params:           ~10,000");
-        console.log("  Subtotal:              ~178,000");
-        console.log("");
-        console.log("EVENTS (375 + 8*bytes + 256*topics):");
-        console.log("  Transfer event:        ~100,000");
-        console.log("  2x LeafInserted:        ~20,000");
-        console.log("  Subtotal:              ~120,000");
-        console.log("");
-        console.log("BASE TX:                   21,000");
-        console.log("");
-        console.log("-----------------------------------------");
-        console.log("ESTIMATED TOTAL:       ~4,570,392");
-        console.log("(Actual may vary with cold/warm slots)");
-    }
 }

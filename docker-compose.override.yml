@@ -1,0 +1,8 @@
+# Local development overrides
+# This file is automatically loaded by docker-compose
+# For production, use: docker compose -f docker-compose.yml up
+
+services:
+  adapter:
+    ports:
+      - "8546:8546"

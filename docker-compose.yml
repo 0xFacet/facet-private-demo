@@ -1,0 +1,35 @@
+services:
+  adapter:
+    image: ${IMAGE:-facet-privacy-adapter:latest}
+    expose:
+      - "8546"
+    environment:
+      PORT: 8546
+      L1_RPC_URL: ${L1_RPC_URL}
+      PRIVACY_POOL_ADDRESS: ${PRIVACY_POOL_ADDRESS}
+      REGISTRY_ADDRESS: ${REGISTRY_ADDRESS}
+      RELAYER_PRIVATE_KEY: ${RELAYER_PRIVATE_KEY}
+      DEPLOY_BLOCK: ${DEPLOY_BLOCK}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8546 -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"eth_chainId\",\"id\":1}' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      CADDY_HOSTS: ${CADDY_HOSTS}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/etc/caddy/certs:ro
+    depends_on:
+      adapter:
+        condition: service_healthy
+    restart: unless-stopped
