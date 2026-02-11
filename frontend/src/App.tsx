@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { encodeFunctionData, parseEther as viemParseEther, formatEther as viemFormatEther } from 'viem'
+import { parseEther as viemParseEther, formatEther as viemFormatEther } from 'viem'
+import { useAccount, useSignMessage, useSwitchChain, useSendTransaction, useWriteContract } from 'wagmi'
+import { sepolia } from 'wagmi/chains'
+import { ConnectButton } from '@rainbow-me/rainbowkit'
 import { useTheme, type Theme } from './themes'
+import { facetPrivate } from './wagmi'
 
 // Configuration
 const ADAPTER_URL = import.meta.env.VITE_ADAPTER_URL || 'http://localhost:8546'
 const WITHDRAW_SENTINEL = '0x0000000000000000000000000000000000000001'
-const SEPOLIA_CHAIN_ID = '0xaa36a7' // 11155111
-const VIRTUAL_CHAIN_ID = '0xcc07c9' // 13371337
 
 // Contract address - must match deployed contract
 const PRIVACY_POOL_ADDRESS = import.meta.env.VITE_PRIVACY_POOL_ADDRESS || '0x' // Set via env
@@ -53,15 +55,6 @@ interface Status {
 
 const ETHERSCAN_URL = 'https://sepolia.etherscan.io/tx/'
 
-declare global {
-  interface Window {
-    ethereum?: {
-      request: (args: { method: string; params?: unknown[] }) => Promise<unknown>
-      on: (event: string, callback: (...args: unknown[]) => void) => void
-    }
-  }
-}
-
 // RPC helper for adapter
 async function rpc(method: string, params: unknown[] = []): Promise<unknown> {
   const res = await fetch(ADAPTER_URL, {
@@ -93,33 +86,25 @@ function randomBigInt(): bigint {
   return BigInt(hex) % FIELD_SIZE
 }
 
-// Switch to a specific network
-async function switchToNetwork(chainId: string, addIfMissing = false) {
-  try {
-    await window.ethereum!.request({
-      method: 'wallet_switchEthereumChain',
-      params: [{ chainId }],
-    })
-  } catch (err: unknown) {
-    if ((err as { code: number }).code === 4902 && addIfMissing) {
-      await window.ethereum!.request({
-        method: 'wallet_addEthereumChain',
-        params: [{
-          chainId: VIRTUAL_CHAIN_ID,
-          chainName: 'Facet Private',
-          rpcUrls: [ADAPTER_URL],
-          nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-        }],
-      })
-    } else {
-      throw err
-    }
-  }
+// Extract a tx hash from an error message (e.g. viem timeout errors)
+function extractTxHash(message: string): string | undefined {
+  const match = message.match(/0x[0-9a-fA-F]{64}/)
+  return match?.[0]
+}
+
+// Clean up viem error messages for display
+function cleanErrorMessage(message: string): string {
+  return message
+    .replace(/\s*Version: viem@[\d.]+\s*$/, '') // strip viem version suffix
+    .replace(/"(0x[0-9a-fA-F]+)"/g, '$1')       // remove quotes around tx hashes
+    .trim()
 }
 
 // Status display component
 function StatusDisplay({ status, elapsedTime, theme: t }: { status: Status | null; elapsedTime: number; theme: Theme }) {
   if (!status) return null
+
+  const txHash = status.txHash || (status.type === 'error' ? extractTxHash(status.message) : undefined)
 
   return (
     <div className={`p-3 text-sm flex items-center gap-3 rounded ${t.status[status.type]}`}>
@@ -129,16 +114,18 @@ function StatusDisplay({ status, elapsedTime, theme: t }: { status: Status | nul
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
         </svg>
       )}
-      <div className="flex-1">
-        <div className={t.statusText}>{status.message}</div>
+      <div className="flex-1 min-w-0">
+        <div className={`${t.statusText} break-words ${status.type === 'error' ? 'normal-case' : ''}`}>
+          {status.type === 'error' ? cleanErrorMessage(status.message) : status.message}
+        </div>
         {status.type === 'pending' && status.message.includes('proof') && (
           <div className="text-xs opacity-75 mt-1">
             {elapsedTime}s elapsed - proof generation takes ~60s on this demo server
           </div>
         )}
-        {status.type === 'success' && status.txHash && (
+        {txHash && (status.type === 'success' || status.type === 'error') && (
           <a
-            href={`${ETHERSCAN_URL}${status.txHash}`}
+            href={`${ETHERSCAN_URL}${txHash}`}
             target="_blank"
             rel="noopener noreferrer"
             className="text-xs underline hover:no-underline mt-1 inline-block"
@@ -152,7 +139,12 @@ function StatusDisplay({ status, elapsedTime, theme: t }: { status: Status | nul
 }
 
 function App() {
-  const [account, setAccount] = useState<string | null>(null)
+  const { address: account, isConnected } = useAccount()
+  const { signMessageAsync } = useSignMessage()
+  const { switchChainAsync } = useSwitchChain()
+  const { sendTransactionAsync } = useSendTransaction()
+  const { writeContractAsync } = useWriteContract()
+
   const [registered, setRegistered] = useState(false)
   const [balance, setBalance] = useState<string>('--')
   const [l1Balance, setL1Balance] = useState<string>('--')
@@ -163,6 +155,22 @@ function App() {
   const [proofStartTime, setProofStartTime] = useState<number | null>(null)
   const [elapsedTime, setElapsedTime] = useState(0)
   const [sessionLost, setSessionLost] = useState(false)
+
+  // Reset state when account changes or disconnects
+  const prevAccountRef = useRef(account)
+  useEffect(() => {
+    if (prevAccountRef.current !== account) {
+      prevAccountRef.current = account
+      setRegistered(false)
+      setBalance('--')
+      setL1Balance('--')
+      setNotes([])
+      setTransactions([])
+      setStatus(null)
+      setLoading(null)
+      setSessionLost(false)
+    }
+  }, [account])
 
   // Form state with status clearing
   const [depositAmount, setDepositAmountRaw] = useState('')
@@ -286,37 +294,18 @@ function App() {
     }
   }, [account, registered, updateBalance, updateNotes, updateTransactions])
 
-  // Connect wallet
-  const connect = async () => {
-    try {
-      if (!window.ethereum) {
-        throw new Error('MetaMask not found. Please install MetaMask.')
-      }
-
-      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' }) as string[]
-      const addr = accounts[0]
-      setAccount(addr)
-
-      showStatus('Wallet connected! Please register your viewing key.')
-    } catch (e) {
-      showStatus((e as Error).message, 'error')
-    }
-  }
-
   // Register viewing key
   const register = async () => {
     try {
       if (!account) return
       setLoading('register')
-      showStatus('Please sign the message in MetaMask...', 'pending')
+      showStatus('Please sign the message in your wallet...', 'pending')
 
-      const message = `Register viewing key for Facet Private\nAddress: ${account}`
-      const signature = await window.ethereum!.request({
-        method: 'personal_sign',
-        params: [message, account],
-      }) as string
+      const lowerAccount = account.toLowerCase()
+      const message = `Register viewing key for Facet Private\nAddress: ${lowerAccount}`
+      const signature = await signMessageAsync({ message })
 
-      await rpc('privacy_registerViewingKey', [account, signature])
+      await rpc('privacy_registerViewingKey', [lowerAccount, signature])
 
       setRegistered(true)
       setLoading(null)
@@ -341,7 +330,7 @@ function App() {
 
       // Ensure we're on Sepolia
       showStatus('Switching to Sepolia...', 'pending', 'deposit')
-      await switchToNetwork(SEPOLIA_CHAIN_ID)
+      await switchChainAsync({ chainId: sepolia.id })
 
       const amount = parseEther(depositAmount)
       const owner = BigInt(account!)
@@ -365,25 +354,16 @@ function App() {
         },
       ]) as `0x${string}`
 
-      // Encode the deposit call
-      const data = encodeFunctionData({
+      showStatus('Confirm deposit in your wallet...', 'pending', 'deposit')
+
+      const txHash = await writeContractAsync({
+        address: PRIVACY_POOL_ADDRESS as `0x${string}`,
         abi: PRIVACY_POOL_ABI,
         functionName: 'deposit',
         args: [owner, randomness, nullifierKeyHash, encryptedNote],
+        value: amount,
+        chainId: sepolia.id,
       })
-
-      showStatus('Confirm deposit in MetaMask...', 'pending', 'deposit')
-
-      // User signs tx directly on Sepolia
-      const txHash = await window.ethereum!.request({
-        method: 'eth_sendTransaction',
-        params: [{
-          from: account,
-          to: PRIVACY_POOL_ADDRESS,
-          value: '0x' + amount.toString(16),
-          data,
-        }],
-      }) as string
 
       showStatus('Waiting for deposit confirmation...', 'pending', 'deposit')
 
@@ -421,15 +401,15 @@ function App() {
 
       // Ensure we're on virtual chain
       showStatus('Preparing transaction...', 'pending', 'transfer')
-      await switchToNetwork(VIRTUAL_CHAIN_ID, true)
+      await switchChainAsync({ chainId: facetPrivate.id })
 
-      const weiAmount = '0x' + parseEther(transferAmount).toString(16)
-      showStatus('Confirm in MetaMask...', 'pending', 'transfer')
+      showStatus('Confirm in your wallet...', 'pending', 'transfer')
 
-      const txHash = await window.ethereum!.request({
-        method: 'eth_sendTransaction',
-        params: [{ from: account, to: transferTo, value: weiAmount }],
-      }) as string
+      const txHash = await sendTransactionAsync({
+        to: transferTo as `0x${string}`,
+        value: parseEther(transferAmount),
+        chainId: facetPrivate.id,
+      })
 
       // Transaction submitted - now poll for status
       // The RPC returns immediately, proof generation happens in background
@@ -493,15 +473,15 @@ function App() {
 
       // Ensure we're on virtual chain
       showStatus('Preparing transaction...', 'pending', 'withdraw')
-      await switchToNetwork(VIRTUAL_CHAIN_ID, true)
+      await switchChainAsync({ chainId: facetPrivate.id })
 
-      const weiAmount = '0x' + parseEther(withdrawAmount).toString(16)
-      showStatus('Confirm in MetaMask...', 'pending', 'withdraw')
+      showStatus('Confirm in your wallet...', 'pending', 'withdraw')
 
-      const txHash = await window.ethereum!.request({
-        method: 'eth_sendTransaction',
-        params: [{ from: account, to: WITHDRAW_SENTINEL, value: weiAmount }],
-      }) as string
+      const txHash = await sendTransactionAsync({
+        to: WITHDRAW_SENTINEL as `0x${string}`,
+        value: parseEther(withdrawAmount),
+        chainId: facetPrivate.id,
+      })
 
       // Transaction submitted - now poll for status
       // The RPC returns immediately, proof generation happens in background
@@ -585,17 +565,21 @@ function App() {
           <p className={t.tagline}>Private payments on Ethereum, powered by MetaMask</p>
 
           {/* Connect / Register */}
-          {(!account || !registered) && (
+          {(!isConnected || !registered) && (
             <div className={`${t.card} p-4 space-y-3`}>
-              {!account ? (
+              {!isConnected ? (
                 <>
-                  <button
-                    onClick={connect}
-                    disabled={!!loading}
-                    className={`${t.btnAccent} w-full py-3 px-6`}
-                  >
-                    Connect Wallet
-                  </button>
+                  <ConnectButton.Custom>
+                    {({ openConnectModal }) => (
+                      <button
+                        onClick={openConnectModal}
+                        disabled={!!loading}
+                        className={`${t.btnAccent} w-full py-3 px-6`}
+                      >
+                        Connect Wallet
+                      </button>
+                    )}
+                  </ConnectButton.Custom>
                   <div className={`text-left space-y-2 pt-2 ${t.infoText}`}>
                     <p><strong className={t.infoStrong}>Your keys, your funds.</strong> Your MetaMask private key is your spending key. The adapter generates ZK proofs but cannot spend without your signature.</p>
                     <p><strong className={t.infoStrong}>Deposits are public.</strong> When you deposit, observers see the amount. This is a tradeoff for simpler UX (no client-side proofs).</p>
