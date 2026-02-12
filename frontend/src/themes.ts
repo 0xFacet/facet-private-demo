@@ -63,6 +63,9 @@ export interface Theme {
 
   // Refresh icon stroke color (for SVG)
   refreshStroke: string
+
+  // Background color applied to html/body (prevents iOS overscroll flash)
+  pageBg: string
 }
 
 // ─── Original Dark Theme ─────────────────────────────────────────────
@@ -128,6 +131,7 @@ export const darkTheme: Theme = {
   footerLink: 'text-slate-500 hover:text-slate-300 text-sm transition-colors inline-flex items-center gap-1.5',
 
   refreshStroke: 'currentColor',
+  pageBg: '#0f172a', // slate-900
 }
 
 // ─── Skeuomorphic Theme ──────────────────────────────────────────────
@@ -193,6 +197,7 @@ export const skeuomorphicTheme: Theme = {
   footerLink: 'text-[#5a4030] hover:text-[#a08060] text-xs font-bold uppercase tracking-wider transition-colors inline-flex items-center gap-1.5 skeu-embossed-dark',
 
   refreshStroke: '#333',
+  pageBg: '#000000',
 }
 
 // ─── Brutalist Ticket Theme ─────────────────────────────────────────
@@ -258,6 +263,7 @@ export const brutalistTheme: Theme = {
   footerLink: 'text-[#999] hover:text-[#0000FF] text-sm transition-colors inline-flex items-center gap-1.5 uppercase tracking-wider',
 
   refreshStroke: '#050505',
+  pageBg: '#1a1a1a',
 }
 
 // ─── Japanese Receipt Theme ─────────────────────────────────────────
@@ -323,6 +329,7 @@ export const receiptTheme: Theme = {
   footerLink: 'text-black/50 hover:text-black text-sm transition-colors inline-flex items-center gap-1.5',
 
   refreshStroke: '#000000',
+  pageBg: '#e8eadd',
 }
 
 // ─── Acid Brutalist Theme ───────────────────────────────────────────
@@ -388,6 +395,7 @@ export const acidTheme: Theme = {
   footerLink: 'text-black/40 hover:text-[#00FF00] text-sm transition-colors inline-flex items-center gap-1.5 uppercase tracking-wider',
 
   refreshStroke: '#000000',
+  pageBg: '#ffffff',
 }
 
 // ─── Blue Dashboard Theme ───────────────────────────────────────────
@@ -453,6 +461,7 @@ export const blueprintTheme: Theme = {
   footerLink: 'text-white/50 hover:text-white text-sm transition-colors inline-flex items-center gap-1.5',
 
   refreshStroke: '#0039d6',
+  pageBg: '#0039d6',
 }
 
 // ─── Braun Hardware Theme ───────────────────────────────────────────
@@ -520,6 +529,7 @@ export const braunTheme: Theme = {
   footerLink: 'text-[#56524c] hover:text-[#9a938b] text-sm transition-colors inline-flex items-center gap-1.5 uppercase tracking-wider',
 
   refreshStroke: '#6b9e6b',
+  pageBg: '#22252a',
 }
 
 // ─── LEGO Instructions Theme ────────────────────────────────────────
@@ -585,6 +595,7 @@ export const legoTheme: Theme = {
   footerLink: 'text-[#FFDCB4]/70 hover:text-[#FFDCB4] text-sm transition-colors inline-flex items-center gap-1.5',
 
   refreshStroke: '#000000',
+  pageBg: '#000000',
 }
 
 // ─── Retro Terminal Theme ───────────────────────────────────────────
@@ -650,6 +661,7 @@ export const terminalTheme: Theme = {
   footerLink: 'text-[#FF4B2B]/40 hover:text-[#FF4B2B] text-sm transition-colors inline-flex items-center gap-1.5 uppercase tracking-wider',
 
   refreshStroke: '#FF4B2B',
+  pageBg: '#404040',
 }
 
 // ─── Editorial Navy Theme ───────────────────────────────────────────
@@ -715,6 +727,7 @@ export const editorialTheme: Theme = {
   footerLink: 'text-[#180085]/40 hover:text-[#180085] text-sm transition-colors inline-flex items-center gap-1.5 italic',
 
   refreshStroke: '#180085',
+  pageBg: '#e0e0e0',
 }
 
 // ─── Streetwear Theme ───────────────────────────────────────────────
@@ -780,6 +793,7 @@ export const streetwearTheme: Theme = {
   footerLink: 'text-[#F2E8DC]/40 hover:text-[#FF8C55] text-sm transition-colors inline-flex items-center gap-1.5 uppercase tracking-wider',
 
   refreshStroke: '#FF8C55',
+  pageBg: '#080808',
 }
 
 // ─── Theme Registry ──────────────────────────────────────────────────
@@ -796,13 +810,15 @@ export function useTheme() {
     }
   })
 
+  const theme = themes.find(t => t.id === themeId) || darkTheme
+
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, themeId)
     } catch { /* ignore */ }
-  }, [themeId])
-
-  const theme = themes.find(t => t.id === themeId) || darkTheme
+    document.documentElement.style.backgroundColor = theme.pageBg
+    document.body.style.backgroundColor = theme.pageBg
+  }, [themeId, theme.pageBg])
 
   return { theme, themeId, setThemeId, themes }
 }
