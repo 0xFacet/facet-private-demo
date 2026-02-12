@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Dark rounded background -->
+  <rect width="64" height="64" rx="12" fill="#22252a"/>
+  <rect x="1.5" y="1.5" width="61" height="61" rx="10.5" fill="none" stroke="#3e424a" stroke-width="1"/>
+  <!-- FP monogram -->
+  <text x="32" y="43" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif" font-weight="800" font-size="34" letter-spacing="-1" fill="#ddd7cf">FP</text>
+  <!-- Accent bar -->
+  <rect x="8" y="52" width="48" height="3.5" rx="1.75" fill="#e8503a"/>
+</svg>
