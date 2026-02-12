@@ -626,7 +626,7 @@ function App() {
                 <div className={t.balanceAmount}>{l1Balance} <span className={t.balanceUnit}>ETH</span></div>
               </div>
               <div className={`${t.cardSection} space-y-3`}>
-                <p className={t.helpText}>Deposit ETH to shield it. Deposits are visible; spends are not.</p>
+                <p className={t.helpText}>Move ETH into your private balance. The deposit itself is visible on-chain, but once private, your transfers are not.</p>
                 <div className="flex gap-2">
                   <input
                     type="text"
@@ -641,7 +641,7 @@ function App() {
                     disabled={!!loading}
                     className={t.btnPrimary}
                   >
-                    {loading === 'deposit' ? '...' : 'Shield'}
+                    {loading === 'deposit' ? '...' : 'Make Private'}
                   </button>
                 </div>
                 {status?.section === 'deposit' && <StatusDisplay status={status} elapsedTime={elapsedTime} theme={t} />}
@@ -713,10 +713,7 @@ function App() {
 
               {/* Withdraw */}
               <div className={`${t.cardSection} space-y-3`}>
-                <div className="flex items-center gap-2">
-                  <span className={t.sectionTitle}>UNSHIELD</span>
-                  <span className={t.helpText}>— return ETH to your public wallet</span>
-                </div>
+                <p className={t.helpText}>Move ETH back to your public wallet. The withdrawal is visible on-chain.</p>
                 <div className="flex gap-2">
                   <input
                     type="text"
@@ -731,7 +728,7 @@ function App() {
                     disabled={!!loading}
                     className={t.btnAccent}
                   >
-                    {loading === 'withdraw' ? '...' : 'Withdraw'}
+                    {loading === 'withdraw' ? '...' : 'Make Public'}
                   </button>
                 </div>
                 {status?.section === 'withdraw' && <StatusDisplay status={status} elapsedTime={elapsedTime} theme={t} />}

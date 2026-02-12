@@ -9,7 +9,7 @@ const projectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || 'PLACEHOLDER'
 
 export const facetPrivate = defineChain({
   id: 13371337,
-  name: 'Facet Private',
+  name: 'Sepolia (Facet Private)',
   nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
   rpcUrls: { default: { http: [ADAPTER_URL] } },
 })
