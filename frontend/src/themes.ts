@@ -80,7 +80,7 @@ export const darkTheme: Theme = {
   logoText: 'text-xs font-bold text-cyan-400/70 ml-2 inline-block leading-tight',
   headerAddress: 'text-slate-500 text-xs font-mono mt-2 break-all',
   main: 'space-y-4',
-  tagline: 'text-slate-400 text-sm mt-1',
+  tagline: 'text-slate-400 text-sm text-center -mt-3 mb-1',
 
   card: 'bg-slate-800 rounded-xl overflow-hidden',
   cardHeader: 'p-4',
