@@ -60,6 +60,8 @@ export interface Theme {
   // Footer
   footer: string
   footerLink: string
+  footerSep: string
+  themePicker: string
 
   // Refresh icon stroke color (for SVG)
   refreshStroke: string
@@ -78,7 +80,7 @@ export const darkTheme: Theme = {
   header: 'text-center mb-6 py-3',
   logoMark: 'text-4xl font-bold text-cyan-400 inline',
   logoText: 'text-xs font-bold text-cyan-400/70 ml-2 inline-block leading-tight',
-  headerAddress: 'text-slate-500 text-xs font-mono mt-2 break-all',
+  headerAddress: 'text-slate-500 text-xs font-mono hover:text-slate-300 cursor-pointer transition-colors',
   main: 'space-y-4',
   tagline: 'text-slate-400 text-sm text-center -mt-6 mb-5',
 
@@ -127,8 +129,10 @@ export const darkTheme: Theme = {
   sessionTitle: 'font-semibold mb-1 text-red-400',
   sessionText: 'text-sm mb-3 text-red-400',
 
-  footer: 'mt-8 pt-4 border-t border-slate-700/50 text-center',
+  footer: 'mt-8 pt-4 border-t border-slate-700/50 flex items-center justify-center',
   footerLink: 'text-slate-500 hover:text-slate-300 text-sm transition-colors inline-flex items-center gap-1.5',
+  footerSep: 'text-slate-600 mx-2',
+  themePicker: 'appearance-none bg-slate-800 text-slate-500 border border-slate-700 rounded-md px-2 py-1 text-xs cursor-pointer focus:outline-none hover:text-slate-300',
 
   refreshStroke: 'currentColor',
   pageBg: '#0f172a', // slate-900
@@ -193,8 +197,10 @@ export const skeuomorphicTheme: Theme = {
   sessionTitle: 'font-bold text-red-800 skeu-embossed mb-1',
   sessionText: 'text-sm text-red-700 mb-3',
 
-  footer: 'mt-4 text-center',
+  footer: 'mt-4 flex items-center justify-center',
   footerLink: 'text-[#5a4030] hover:text-[#a08060] text-xs font-bold uppercase tracking-wider transition-colors inline-flex items-center gap-1.5 skeu-embossed-dark',
+  footerSep: 'text-[#5a4030]/50 mx-2',
+  themePicker: 'appearance-none bg-[#c4a882] text-[#5a4030] border border-[#a08060] rounded-md px-2 py-1 text-xs cursor-pointer focus:outline-none hover:text-[#3a2010]',
 
   refreshStroke: '#333',
   pageBg: '#000000',
@@ -210,7 +216,7 @@ export const brutalistTheme: Theme = {
   header: 'text-center mb-6 py-3',
   logoMark: 'text-4xl font-bold text-[#0000FF] inline',
   logoText: 'text-xs font-bold text-[#0000FF]/70 ml-2 inline-block leading-tight uppercase tracking-widest',
-  headerAddress: 'text-[#999] text-xs font-mono mt-2 break-all',
+  headerAddress: 'text-[#999] text-xs font-mono text-left truncate max-w-[180px]',
   main: 'space-y-4',
   tagline: 'text-[#999] text-sm mt-1 uppercase tracking-wider',
 
@@ -259,8 +265,10 @@ export const brutalistTheme: Theme = {
   sessionTitle: 'font-bold mb-1 text-red-700 uppercase',
   sessionText: 'text-sm mb-3 text-red-600',
 
-  footer: 'mt-8 pt-4 border-t border-dashed border-[#999]/30 text-center',
+  footer: 'mt-8 pt-4 border-t border-dashed border-[#999]/30 flex items-center justify-center',
   footerLink: 'text-[#999] hover:text-[#0000FF] text-sm transition-colors inline-flex items-center gap-1.5 uppercase tracking-wider',
+  footerSep: 'text-[#999]/50 mx-2',
+  themePicker: 'appearance-none bg-white text-[#999] border border-dashed border-[#999]/30 rounded-none px-2 py-1 text-xs cursor-pointer focus:outline-none hover:text-black',
 
   refreshStroke: '#050505',
   pageBg: '#1a1a1a',
@@ -276,7 +284,7 @@ export const receiptTheme: Theme = {
   header: 'text-center mb-6 py-3 border-b-2 border-black',
   logoMark: 'text-4xl font-bold text-black inline',
   logoText: 'text-xs font-bold text-black ml-2 inline-block leading-tight',
-  headerAddress: 'text-black/60 text-xs font-mono mt-2 break-all',
+  headerAddress: 'text-black/60 text-xs font-mono text-left truncate max-w-[180px]',
   main: 'space-y-4',
   tagline: 'text-black/60 text-sm mt-1',
 
@@ -325,8 +333,10 @@ export const receiptTheme: Theme = {
   sessionTitle: 'font-bold mb-1 text-red-700',
   sessionText: 'text-sm mb-3 text-red-600',
 
-  footer: 'mt-8 pt-4 border-t-2 border-black text-center',
+  footer: 'mt-8 pt-4 border-t-2 border-black flex items-center justify-center',
   footerLink: 'text-black/50 hover:text-black text-sm transition-colors inline-flex items-center gap-1.5',
+  footerSep: 'text-black/30 mx-2',
+  themePicker: 'appearance-none bg-white text-black/50 border border-black/10 rounded-md px-2 py-1 text-xs cursor-pointer focus:outline-none hover:text-black',
 
   refreshStroke: '#000000',
   pageBg: '#e8eadd',
@@ -342,7 +352,7 @@ export const acidTheme: Theme = {
   header: 'text-center mb-6 py-3 border-b border-black',
   logoMark: 'text-4xl font-bold text-black inline font-acid-display uppercase',
   logoText: 'text-xs font-bold text-black ml-2 inline-block leading-tight uppercase tracking-widest',
-  headerAddress: 'text-black/50 text-xs font-mono mt-2 break-all',
+  headerAddress: 'text-black/50 text-xs font-mono text-left truncate max-w-[180px]',
   main: 'space-y-4',
   tagline: 'text-black/60 text-sm mt-1 uppercase tracking-wider',
 
@@ -391,8 +401,10 @@ export const acidTheme: Theme = {
   sessionTitle: 'font-bold mb-1 text-red-600 uppercase',
   sessionText: 'text-sm mb-3 text-red-500',
 
-  footer: 'mt-8 pt-4 border-t border-black text-center',
+  footer: 'mt-8 pt-4 border-t border-black flex items-center justify-center',
   footerLink: 'text-black/40 hover:text-[#00FF00] text-sm transition-colors inline-flex items-center gap-1.5 uppercase tracking-wider',
+  footerSep: 'text-black/20 mx-2',
+  themePicker: 'appearance-none bg-white text-black/40 border border-black rounded-none px-2 py-1 text-xs cursor-pointer focus:outline-none hover:text-[#00FF00]',
 
   refreshStroke: '#000000',
   pageBg: '#ffffff',
@@ -408,7 +420,7 @@ export const blueprintTheme: Theme = {
   header: 'text-center mb-6 py-3',
   logoMark: 'text-4xl font-bold text-white inline',
   logoText: 'text-xs font-bold text-white/70 ml-2 inline-block leading-tight',
-  headerAddress: 'text-white/50 text-xs font-mono mt-2 break-all',
+  headerAddress: 'text-white/50 text-xs font-mono text-left truncate max-w-[180px]',
   main: 'space-y-4',
   tagline: 'text-white/70 text-sm mt-1',
 
@@ -457,8 +469,10 @@ export const blueprintTheme: Theme = {
   sessionTitle: 'font-semibold mb-1 text-red-700',
   sessionText: 'text-sm mb-3 text-red-600',
 
-  footer: 'mt-8 pt-4 border-t border-white/20 text-center',
+  footer: 'mt-8 pt-4 border-t border-white/20 flex items-center justify-center',
   footerLink: 'text-white/50 hover:text-white text-sm transition-colors inline-flex items-center gap-1.5',
+  footerSep: 'text-white/30 mx-2',
+  themePicker: 'appearance-none bg-[#1a1f3d] text-white/50 border border-white/20 rounded-md px-2 py-1 text-xs cursor-pointer focus:outline-none hover:text-white',
 
   refreshStroke: '#0039d6',
   pageBg: '#0039d6',
@@ -476,7 +490,7 @@ export const braunTheme: Theme = {
   header: 'text-center mb-6 py-3 border-b border-[#3e424a]',
   logoMark: 'text-4xl font-bold text-[#ddd7cf] inline',
   logoText: 'text-xs font-bold text-[#706b64] ml-2 inline-block leading-tight uppercase tracking-widest',
-  headerAddress: 'text-[#706b64] text-xs font-mono mt-2 break-all',
+  headerAddress: 'text-[#706b64] text-xs font-mono text-left truncate max-w-[180px]',
   main: 'space-y-4',
   tagline: 'text-[#706b64] text-sm mt-1 uppercase tracking-wider',
 
@@ -525,8 +539,10 @@ export const braunTheme: Theme = {
   sessionTitle: 'font-bold mb-1 text-red-400 uppercase',
   sessionText: 'text-sm mb-3 text-red-400/70',
 
-  footer: 'mt-8 pt-4 border-t border-[#3e424a] text-center',
+  footer: 'mt-8 pt-4 border-t border-[#3e424a] flex items-center justify-center',
   footerLink: 'text-[#56524c] hover:text-[#9a938b] text-sm transition-colors inline-flex items-center gap-1.5 uppercase tracking-wider',
+  footerSep: 'text-[#56524c]/50 mx-2',
+  themePicker: 'appearance-none bg-[#e8e4de] text-[#56524c] border border-[#3e424a] rounded-md px-2 py-1 text-xs cursor-pointer focus:outline-none hover:text-[#9a938b]',
 
   refreshStroke: '#6b9e6b',
   pageBg: '#22252a',
@@ -542,7 +558,7 @@ export const legoTheme: Theme = {
   header: 'text-center mb-6 py-3 bg-[#FFDCB4] border border-black',
   logoMark: 'text-4xl font-bold text-black inline',
   logoText: 'text-xs font-bold text-black ml-2 inline-block leading-tight',
-  headerAddress: 'text-black/60 text-xs font-mono mt-2 break-all',
+  headerAddress: 'text-black/60 text-xs font-mono text-left truncate max-w-[180px]',
   main: 'space-y-4',
   tagline: 'text-black/60 text-sm mt-1',
 
@@ -591,8 +607,10 @@ export const legoTheme: Theme = {
   sessionTitle: 'font-bold mb-1 text-red-900',
   sessionText: 'text-sm mb-3 text-red-800',
 
-  footer: 'mt-8 pt-4 border-t border-[#FFDCB4]/50 text-center',
+  footer: 'mt-8 pt-4 border-t border-[#FFDCB4]/50 flex items-center justify-center',
   footerLink: 'text-[#FFDCB4]/70 hover:text-[#FFDCB4] text-sm transition-colors inline-flex items-center gap-1.5',
+  footerSep: 'text-[#FFDCB4]/40 mx-2',
+  themePicker: 'appearance-none bg-[#1a0a00] text-[#FFDCB4]/70 border border-[#FFDCB4]/30 rounded-md px-2 py-1 text-xs cursor-pointer focus:outline-none hover:text-[#FFDCB4]',
 
   refreshStroke: '#000000',
   pageBg: '#000000',
@@ -608,7 +626,7 @@ export const terminalTheme: Theme = {
   header: 'text-center mb-6 py-3 border-b border-[#FF4B2B]',
   logoMark: 'text-4xl font-bold text-[#FF4B2B] inline uppercase',
   logoText: 'text-xs font-bold text-[#FF4B2B]/70 ml-2 inline-block leading-tight uppercase tracking-widest',
-  headerAddress: 'text-[#FF4B2B]/50 text-xs font-mono mt-2 break-all uppercase',
+  headerAddress: 'text-[#FF4B2B]/50 text-xs font-mono text-left truncate max-w-[180px] uppercase',
   main: 'space-y-4',
   tagline: 'text-[#FF4B2B]/60 text-sm mt-1 uppercase tracking-wider',
 
@@ -657,8 +675,10 @@ export const terminalTheme: Theme = {
   sessionTitle: 'font-bold mb-1 text-red-500 uppercase',
   sessionText: 'text-sm mb-3 text-red-500/80',
 
-  footer: 'mt-8 pt-4 border-t border-[#FF4B2B]/30 text-center',
+  footer: 'mt-8 pt-4 border-t border-[#FF4B2B]/30 flex items-center justify-center',
   footerLink: 'text-[#FF4B2B]/40 hover:text-[#FF4B2B] text-sm transition-colors inline-flex items-center gap-1.5 uppercase tracking-wider',
+  footerSep: 'text-[#FF4B2B]/20 mx-2',
+  themePicker: 'appearance-none bg-white text-[#FF4B2B]/40 border border-[#FF4B2B]/30 rounded-md px-2 py-1 text-xs cursor-pointer focus:outline-none hover:text-[#FF4B2B]',
 
   refreshStroke: '#FF4B2B',
   pageBg: '#404040',
@@ -674,7 +694,7 @@ export const editorialTheme: Theme = {
   header: 'text-center mb-6 py-3 border-b border-[#180085]/20',
   logoMark: 'text-4xl font-bold text-[#180085] inline italic',
   logoText: 'text-xs font-bold text-[#180085]/70 ml-2 inline-block leading-tight italic',
-  headerAddress: 'text-[#180085]/40 text-xs font-mono mt-2 break-all',
+  headerAddress: 'text-[#180085]/40 text-xs font-mono text-left truncate max-w-[180px]',
   main: 'space-y-4',
   tagline: 'text-[#180085]/50 text-sm mt-1 italic',
 
@@ -723,8 +743,10 @@ export const editorialTheme: Theme = {
   sessionTitle: 'font-bold mb-1 text-red-800 italic',
   sessionText: 'text-sm mb-3 text-red-700',
 
-  footer: 'mt-8 pt-4 border-t border-[#180085]/10 text-center',
+  footer: 'mt-8 pt-4 border-t border-[#180085]/10 flex items-center justify-center',
   footerLink: 'text-[#180085]/40 hover:text-[#180085] text-sm transition-colors inline-flex items-center gap-1.5 italic',
+  footerSep: 'text-[#180085]/20 mx-2',
+  themePicker: 'appearance-none bg-[#F5F0E8] text-[#180085]/40 border border-[#180085]/10 rounded-md px-2 py-1 text-xs cursor-pointer focus:outline-none hover:text-[#180085]',
 
   refreshStroke: '#180085',
   pageBg: '#e0e0e0',
@@ -740,7 +762,7 @@ export const streetwearTheme: Theme = {
   header: 'text-center mb-6 py-3 border-b-[3px] border-[#F2E8DC]',
   logoMark: 'text-4xl text-[#FFC0CB] inline font-streetwear-display uppercase',
   logoText: 'text-xs font-bold text-[#FF8C55] ml-2 inline-block leading-tight uppercase tracking-widest',
-  headerAddress: 'text-[#F2E8DC]/50 text-xs font-mono mt-2 break-all uppercase',
+  headerAddress: 'text-[#F2E8DC]/50 text-xs font-mono text-left truncate max-w-[180px] uppercase',
   main: 'space-y-4',
   tagline: 'text-[#FF8C55] text-sm mt-1 uppercase tracking-wider font-bold',
 
@@ -789,8 +811,10 @@ export const streetwearTheme: Theme = {
   sessionTitle: 'font-bold mb-1 text-white uppercase font-streetwear-display',
   sessionText: 'text-sm mb-3 text-white/90',
 
-  footer: 'mt-8 pt-4 border-t-[3px] border-[#F2E8DC]/20 text-center',
+  footer: 'mt-8 pt-4 border-t-[3px] border-[#F2E8DC]/20 flex items-center justify-center',
   footerLink: 'text-[#F2E8DC]/40 hover:text-[#FF8C55] text-sm transition-colors inline-flex items-center gap-1.5 uppercase tracking-wider',
+  footerSep: 'text-[#F2E8DC]/20 mx-2',
+  themePicker: 'appearance-none bg-[#1A1A1A] text-[#F2E8DC]/40 border border-[#F2E8DC]/20 rounded-md px-2 py-1 text-xs cursor-pointer focus:outline-none hover:text-[#FF8C55]',
 
   refreshStroke: '#FF8C55',
   pageBg: '#080808',

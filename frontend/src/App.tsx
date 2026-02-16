@@ -538,15 +538,6 @@ function App() {
 
   return (
     <div className={t.page}>
-      {/* Theme Picker */}
-      <div className="theme-picker">
-        <select value={themeId} onChange={(e) => setThemeId(e.target.value)}>
-          {allThemes.map(theme => (
-            <option key={theme.id} value={theme.id}>{theme.name}</option>
-          ))}
-        </select>
-      </div>
-
       <div className={t.container}>
         {/* Header */}
         <header className={t.header}>
@@ -555,14 +546,22 @@ function App() {
               <div className={t.logoMark}>FP</div>
               <div className={t.logoText}>FACET<br />PRIVATE</div>
             </div>
-            {account && <div className={t.headerAddress}>{account}</div>}
+            {account && (
+              <ConnectButton.Custom>
+                {({ account: acct, openAccountModal }) => (
+                  <button onClick={openAccountModal} className={t.headerAddress}>
+                    {acct?.ensName || (acct?.address ? `${acct.address.slice(0, 8)}...${acct.address.slice(-6)}` : '')}
+                  </button>
+                )}
+              </ConnectButton.Custom>
+            )}
           </div>
         </header>
 
         {/* Main Content */}
         <main className={t.main}>
           {/* Tagline */}
-          <p className={t.tagline}>Private payments on Ethereum with your existing wallet</p>
+          <p className={t.tagline}>Private payments on Ethereum <span className="whitespace-nowrap">with your existing wallet</span></p>
 
           {/* Connect / Register */}
           {(!isConnected || !registered) && (
@@ -812,6 +811,32 @@ function App() {
             </svg>
             View on GitHub
           </a>
+          <span className={t.footerSep}>·</span>
+          <a
+            href="https://hackmd.io/@tomlehman/enshrined-privacy-pool-overview"
+            target="_blank"
+            rel="noopener noreferrer"
+            className={t.footerLink}
+          >
+            Design Overview
+          </a>
+          <span className={t.footerSep}>·</span>
+          <a
+            href="https://hackmd.io/@tomlehman/enshrined-privacy-pool-eip"
+            target="_blank"
+            rel="noopener noreferrer"
+            className={t.footerLink}
+          >
+            Full Spec
+          </a>
+        </div>
+        <div className="flex items-center justify-center mt-3 gap-2">
+          <span className={t.footerLink}>Theme:</span>
+          <select value={themeId} onChange={(e) => setThemeId(e.target.value)} className={t.themePicker}>
+            {allThemes.map(theme => (
+              <option key={theme.id} value={theme.id}>{theme.name}</option>
+            ))}
+          </select>
         </div>
       </div>
     </div>
