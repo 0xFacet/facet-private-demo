@@ -562,7 +562,7 @@ function App() {
         {/* Main Content */}
         <main className={t.main}>
           {/* Tagline */}
-          <p className={t.tagline}>Private payments on Ethereum, powered by MetaMask</p>
+          <p className={t.tagline}>Private payments on Ethereum with your existing wallet</p>
 
           {/* Connect / Register */}
           {(!isConnected || !registered) && (
@@ -581,16 +581,16 @@ function App() {
                     )}
                   </ConnectButton.Custom>
                   <div className={`text-left space-y-2 pt-2 ${t.infoText}`}>
-                    <p><strong className={t.infoStrong}>Your keys, your funds.</strong> Your MetaMask private key is your spending key. The adapter generates ZK proofs but cannot spend without your signature.</p>
+                    <p><strong className={t.infoStrong}>Your keys, your funds.</strong> Your MetaMask private key is your spending key. The Privacy RPC generates ZK proofs but cannot spend without your signature.</p>
                     <p><strong className={t.infoStrong}>Deposits are public.</strong> When you deposit, observers see the amount. This is a tradeoff for simpler UX (no client-side proofs).</p>
-                    <p><strong className={t.infoStrong}>Spends are unlinkable.</strong> Transfers and withdrawals cannot be linked back to your deposits. That's the core privacy property.</p>
+                    <p><strong className={t.infoStrong}>Transfers are private.</strong> Transfers and withdrawals cannot be linked back to your deposits. That's the core privacy property.</p>
                     <p><strong className={t.infoStrong}>This is a demo.</strong> It proves the core tech works on Sepolia.</p>
                   </div>
                 </>
               ) : (
                 <>
                   <p className={t.infoText}>
-                    Sign a message to create a viewing key and register it with the privacy adapter. The adapter can see your private transactions but it cannot spend your funds. This requires some trust, but you can always run your own adapter instance instead.
+                    Sign a message to set up your private wallet. The Privacy RPC generates proofs on your behalf — it can see your transfers but cannot spend your funds. You can run your own Privacy RPC instead.
                   </p>
                   <button
                     onClick={register}
@@ -713,6 +713,7 @@ function App() {
 
               {/* Withdraw */}
               <div className={`${t.cardSection} space-y-3`}>
+                <div className={t.sectionTitle}>WITHDRAW</div>
                 <p className={t.helpText}>Move ETH back to your public wallet. The withdrawal is visible on-chain.</p>
                 <div className="flex gap-2">
                   <input
